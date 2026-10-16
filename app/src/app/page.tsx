@@ -18,9 +18,8 @@ export default function Home() {
     setView("results");
   }
 
-  function handleAnalyze() {
-    // In the future: call analyze(files, config). For now fall through to sample.
-    setResult(getResult());
+  function handleResult(r: AnalysisResult) {
+    setResult(r);
     setView("results");
   }
 
@@ -41,6 +40,6 @@ export default function Home() {
   }
 
   return (
-    <UploadScreen onAnalyze={handleAnalyze} onLoadSample={handleLoadSample} />
+    <UploadScreen onResult={handleResult} onLoadSample={handleLoadSample} />
   );
 }

@@ -2,6 +2,7 @@
 
 import { cn } from "cn";
 import { useState, useRef } from "react";
+import type { AnalysisResult, Config } from "@/types";
 import {
   Upload,
   FileText,
@@ -15,9 +16,11 @@ import {
   Play,
   Database,
   X,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 
-// ─── Types for local upload state ────────────────────────────────────────────
+// ─── Local form state ────────────────────────────────────────────────────────
 interface UploadConfig {
   logCsv: File | null;
   assetsCsv: File | null;
@@ -25,7 +28,6 @@ interface UploadConfig {
   trainingStart: string;
   trainingEnd: string;
   timezone: string;
-  // settings
   failedLogonsPerHour: number;
   distinctHostsPerHour: number;
   offHoursLogonRisk: number;
@@ -50,6 +52,7 @@ const TIMEZONES = [
   "UTC",
 ];
 
+// ─── File drop zone ───────────────────────────────────────────────────────────
 function FileDropZone({
   id,
   label,
@@ -57,6 +60,7 @@ function FileDropZone({
   icon: Icon,
   file,
   required,
+  disabled,
   onChange,
 }: {
   id: string;
@@ -65,6 +69,7 @@ function FileDropZone({
   icon: React.FC<{ className?: string }>;
   file: File | null;
   required?: boolean;
+  disabled?: boolean;
   onChange: (f: File | null) => void;
 }) {
   const ref = useRef<HTMLInputElement>(null);
@@ -79,23 +84,25 @@ function FileDropZone({
       </label>
       <div
         role="button"
-        tabIndex={0}
+        tabIndex={disabled ? -1 : 0}
         id={id}
         className={cn(
           "relative flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition-all duration-200",
+          disabled && "pointer-events-none opacity-50",
           dragging
             ? "border-blue-400/60 bg-blue-500/10"
             : file
             ? "border-emerald-500/40 bg-emerald-500/5"
             : "border-slate-700/60 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50"
         )}
-        onClick={() => ref.current?.click()}
-        onKeyDown={(e) => e.key === "Enter" && ref.current?.click()}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onClick={() => !disabled && ref.current?.click()}
+        onKeyDown={(e) => !disabled && e.key === "Enter" && ref.current?.click()}
+        onDragOver={(e) => { e.preventDefault(); if (!disabled) setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={(e) => {
           e.preventDefault();
           setDragging(false);
+          if (disabled) return;
           const f = e.dataTransfer.files[0];
           if (f) onChange(f);
         }}
@@ -105,6 +112,7 @@ function FileDropZone({
           type="file"
           accept=".csv"
           className="sr-only"
+          disabled={disabled}
           onChange={(e) => onChange(e.target.files?.[0] ?? null)}
         />
         {file ? (
@@ -134,13 +142,61 @@ function FileDropZone({
   );
 }
 
+// ─── Helpers: read file + build Config ───────────────────────────────────────
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsText(file);
+  });
+}
+
+function buildConfig(cfg: UploadConfig): Config {
+  return {
+    thresholds: {
+      failedLogonsPerHour: cfg.failedLogonsPerHour,
+      distinctHostsPerHour: cfg.distinctHostsPerHour,
+      offHoursLogonRisk: cfg.offHoursLogonRisk,
+      lateralMovementHopCount: cfg.lateralMovementHopCount,
+    },
+    trainingPeriod: {
+      start: cfg.trainingStart ? `${cfg.trainingStart}T00:00:00Z` : "2024-02-01T00:00:00Z",
+      end: cfg.trainingEnd ? `${cfg.trainingEnd}T23:59:59Z` : "2024-02-29T23:59:59Z",
+    },
+    timezone: cfg.timezone,
+    maintenanceWindows: cfg.maintenanceWindows
+      .filter((w) => w.start && w.end)
+      .map((w) => ({
+        start: w.start.includes("T") ? `${w.start}:00Z` : `${w.start}T00:00:00Z`,
+        end: w.end.includes("T") ? `${w.end}:00Z` : `${w.end}T00:00:00Z`,
+      })),
+    approvedAccounts: cfg.approvedAccounts
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    vpnCidrs: cfg.vpnCidrs
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    assets: [],
+    privilegedAccounts: [],
+    ipLocations: [],
+  };
+}
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 interface Props {
-  onAnalyze: () => void;
+  onResult: (result: AnalysisResult) => void;
   onLoadSample: () => void;
 }
 
-export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
+// ─── Component ───────────────────────────────────────────────────────────────
+export function UploadScreen({ onResult, onLoadSample }: Props) {
   const [showSettings, setShowSettings] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const [cfg, setCfg] = useState<UploadConfig>({
     logCsv: null,
     assetsCsv: null,
@@ -163,13 +219,60 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
   const addMaint = () =>
     set("maintenanceWindows", [...cfg.maintenanceWindows, { start: "", end: "" }]);
   const delMaint = (i: number) =>
-    set(
-      "maintenanceWindows",
-      cfg.maintenanceWindows.filter((_, j) => j !== i)
-    );
+    set("maintenanceWindows", cfg.maintenanceWindows.filter((_, j) => j !== i));
+
+  async function handleAnalyze() {
+    if (!cfg.logCsv) return;
+    setError(null);
+    setLoading(true);
+
+    try {
+      // 1. Read files as text
+      const logCsvText = await readFileAsText(cfg.logCsv);
+
+      if (!logCsvText.trim()) {
+        throw new Error("The log CSV is empty — please upload a file with at least one row.");
+      }
+
+      const assetsCsvText = cfg.assetsCsv ? await readFileAsText(cfg.assetsCsv) : undefined;
+      const ipLocCsvText = cfg.ipLocationCsv ? await readFileAsText(cfg.ipLocationCsv) : undefined;
+
+      // 2. Build Config from form values
+      const config = buildConfig(cfg);
+
+      // 3. Run the engine in a Web Worker (lazy import to avoid SSR issues)
+      const { analyzeFile } = await import("@/lib/getResult");
+      const result = await analyzeFile(logCsvText, assetsCsvText, ipLocCsvText, config);
+
+      // 4. Guard: no valid rows at all
+      if (result.ingestReport.validRows === 0 && result.ingestReport.totalRows > 0) {
+        throw new Error(
+          `No valid rows found in the log CSV (${result.ingestReport.totalRows} rows parsed, all invalid). ` +
+            "Check that the file has the expected columns: timestamp, username, sourceIp, host, eventType, result, logonType."
+        );
+      }
+
+      onResult(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-slate-950 px-4 py-10">
+    <div className={cn("min-h-screen bg-slate-950 px-4 py-10", loading && "pointer-events-none")}>
+      {/* Loading overlay */}
+      {loading && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-5 rounded-2xl border border-slate-700/50 bg-slate-900 px-12 py-10 shadow-2xl">
+            <Loader2 className="h-10 w-10 animate-spin text-blue-400" />
+            <p className="text-base font-semibold text-white">Analyzing logs…</p>
+            <p className="text-xs text-slate-400">Running engine in background thread</p>
+          </div>
+        </div>
+      )}
+
       <div className="mx-auto max-w-3xl">
         {/* Header */}
         <div className="mb-10 text-center">
@@ -185,12 +288,30 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
           </p>
         </div>
 
+        {/* Error banner */}
+        {error && (
+          <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-5 py-4">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-400" />
+            <div>
+              <p className="text-sm font-semibold text-red-300">Analysis failed</p>
+              <p className="mt-1 text-xs leading-relaxed text-red-400">{error}</p>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="ml-auto shrink-0 rounded-lg p-1 text-red-400/60 hover:text-red-300 transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
         {/* Sample data CTA */}
         <div className="mb-6 flex flex-col items-center gap-3 sm:flex-row">
           <button
             id="load-sample-data-btn"
             onClick={onLoadSample}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-5 py-3 text-sm font-semibold text-blue-300 transition-all hover:bg-blue-500/20 hover:shadow-lg hover:shadow-blue-500/10 sm:w-auto"
+            disabled={loading}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-5 py-3 text-sm font-semibold text-blue-300 transition-all hover:bg-blue-500/20 hover:shadow-lg hover:shadow-blue-500/10 sm:w-auto disabled:opacity-50"
           >
             <Database className="h-4 w-4" />
             Load Sample Data
@@ -211,7 +332,8 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
               icon={FileText}
               file={cfg.logCsv}
               required
-              onChange={(f) => set("logCsv", f)}
+              disabled={loading}
+              onChange={(f) => { set("logCsv", f); setError(null); }}
             />
             <FileDropZone
               id="upload-assets-csv"
@@ -219,6 +341,7 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
               hint="Host inventory & roles"
               icon={Monitor}
               file={cfg.assetsCsv}
+              disabled={loading}
               onChange={(f) => set("assetsCsv", f)}
             />
             <FileDropZone
@@ -227,6 +350,7 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
               hint="CIDR → location map"
               icon={MapPin}
               file={cfg.ipLocationCsv}
+              disabled={loading}
               onChange={(f) => set("ipLocationCsv", f)}
             />
           </div>
@@ -246,8 +370,9 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
                 id="training-start"
                 type="date"
                 value={cfg.trainingStart}
+                disabled={loading}
                 onChange={(e) => set("trainingStart", e.target.value)}
-                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
               />
             </div>
             <div>
@@ -258,8 +383,9 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
                 id="training-end"
                 type="date"
                 value={cfg.trainingEnd}
+                disabled={loading}
                 onChange={(e) => set("trainingEnd", e.target.value)}
-                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
               />
             </div>
             <div>
@@ -269,13 +395,12 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
               <select
                 id="timezone-select"
                 value={cfg.timezone}
+                disabled={loading}
                 onChange={(e) => set("timezone", e.target.value)}
-                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
               >
                 {TIMEZONES.map((tz) => (
-                  <option key={tz} value={tz}>
-                    {tz}
-                  </option>
+                  <option key={tz} value={tz}>{tz}</option>
                 ))}
               </select>
             </div>
@@ -287,7 +412,8 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
           <button
             id="toggle-settings-panel"
             onClick={() => setShowSettings((v) => !v)}
-            className="flex w-full items-center justify-between px-6 py-4 text-left hover:bg-slate-800/30 transition-colors"
+            disabled={loading}
+            className="flex w-full items-center justify-between px-6 py-4 text-left hover:bg-slate-800/30 transition-colors disabled:opacity-50"
           >
             <h2 className="flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-slate-300">
               <Settings className="h-4 w-4 text-blue-400" /> Advanced Settings
@@ -323,8 +449,9 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
                       type="number"
                       min={1}
                       value={cfg[key]}
+                      disabled={loading}
                       onChange={(e) => set(key, parseInt(e.target.value) || 0)}
-                      className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
                     />
                   </div>
                 ))}
@@ -341,29 +468,32 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
                       id={`maint-start-${i}`}
                       type="datetime-local"
                       value={w.start}
+                      disabled={loading}
                       onChange={(e) => {
                         const mw = [...cfg.maintenanceWindows];
                         mw[i] = { ...mw[i], start: e.target.value };
                         set("maintenanceWindows", mw);
                       }}
-                      className="h-8 flex-1 rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      className="h-8 flex-1 rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
                     />
                     <span className="text-xs text-slate-500">→</span>
                     <input
                       id={`maint-end-${i}`}
                       type="datetime-local"
                       value={w.end}
+                      disabled={loading}
                       onChange={(e) => {
                         const mw = [...cfg.maintenanceWindows];
                         mw[i] = { ...mw[i], end: e.target.value };
                         set("maintenanceWindows", mw);
                       }}
-                      className="h-8 flex-1 rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                      className="h-8 flex-1 rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
                     />
                     <button
                       type="button"
+                      disabled={loading}
                       onClick={() => delMaint(i)}
-                      className="rounded-lg p-1.5 text-red-400/60 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                      className="rounded-lg p-1.5 text-red-400/60 hover:bg-red-500/10 hover:text-red-400 transition-colors disabled:opacity-50"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -372,41 +502,44 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
                 <button
                   id="add-maintenance-window"
                   type="button"
+                  disabled={loading}
                   onClick={addMaint}
-                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-slate-700/60 px-3 py-1.5 text-xs text-slate-500 hover:border-slate-600 hover:text-slate-300 transition-colors"
+                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-slate-700/60 px-3 py-1.5 text-xs text-slate-500 hover:border-slate-600 hover:text-slate-300 transition-colors disabled:opacity-50"
                 >
                   <Plus className="h-3.5 w-3.5" /> Add window
                 </button>
               </div>
 
-              {/* Approved accounts */}
+              {/* Approved accounts + VPN CIDRs */}
               <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
                   <label htmlFor="approved-accounts" className="mb-1 block text-xs font-semibold text-slate-400">
                     Approved Accounts{" "}
-                    <span className="text-slate-600 font-normal">(comma-separated)</span>
+                    <span className="font-normal text-slate-600">(comma-separated)</span>
                   </label>
                   <input
                     id="approved-accounts"
                     type="text"
                     value={cfg.approvedAccounts}
+                    disabled={loading}
                     onChange={(e) => set("approvedAccounts", e.target.value)}
                     placeholder="svc-backup, svc-monitor"
-                    className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
                   />
                 </div>
                 <div>
                   <label htmlFor="vpn-cidrs" className="mb-1 block text-xs font-semibold text-slate-400">
                     VPN CIDRs{" "}
-                    <span className="text-slate-600 font-normal">(comma-separated)</span>
+                    <span className="font-normal text-slate-600">(comma-separated)</span>
                   </label>
                   <input
                     id="vpn-cidrs"
                     type="text"
                     value={cfg.vpnCidrs}
+                    disabled={loading}
                     onChange={(e) => set("vpnCidrs", e.target.value)}
                     placeholder="10.100.0.0/16, 172.20.0.0/14"
-                    className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all"
+                    className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
                   />
                 </div>
               </div>
@@ -418,24 +551,28 @@ export function UploadScreen({ onAnalyze, onLoadSample }: Props) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
           <p className="text-xs text-slate-500">
             {cfg.logCsv ? (
-              <span className="text-emerald-400">✓ Log CSV ready</span>
+              <span className="text-emerald-400">✓ Log CSV ready — {(cfg.logCsv.size / 1024).toFixed(1)} KB</span>
             ) : (
               <span className="text-amber-400">⚠ Log CSV required to run analysis</span>
             )}
           </p>
           <button
             id="run-analysis-btn"
-            onClick={onAnalyze}
-            disabled={!cfg.logCsv}
+            onClick={handleAnalyze}
+            disabled={!cfg.logCsv || loading}
             className={cn(
               "flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-bold transition-all duration-200",
-              cfg.logCsv
+              cfg.logCsv && !loading
                 ? "bg-blue-600 text-white hover:bg-blue-500 hover:shadow-xl hover:shadow-blue-500/20"
                 : "cursor-not-allowed bg-slate-800 text-slate-600"
             )}
           >
-            <Play className="h-4 w-4" />
-            Run Analysis
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Play className="h-4 w-4" />
+            )}
+            {loading ? "Analyzing…" : "Run Analysis"}
           </button>
         </div>
       </div>
