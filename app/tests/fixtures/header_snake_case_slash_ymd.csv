@@ -1,0 +1,8 @@
+time_created,target_user_name,ip_address,workstation_name,event_id,status,logon_type
+2024/03/15 10:00:00,victim_user,198.51.100.50,DC01,4625,FAILURE,3
+2024/03/15 10:01:00,victim_user,198.51.100.50,DC01,4625,FAILURE,3
+2024/03/15 10:02:00,victim_user,198.51.100.50,DC01,4625,FAILURE,3
+2024/03/15 10:03:00,victim_user,198.51.100.50,DC01,4625,FAILURE,3
+2024/03/15 10:04:00,victim_user,198.51.100.50,DC01,4625,FAILURE,3
+2024/03/15 10:05:00,victim_user,198.51.100.50,DC01,4625,FAILURE,3
+2024/03/15 10:06:00,victim_user,198.51.100.50,DC01,4624,SUCCESS,3

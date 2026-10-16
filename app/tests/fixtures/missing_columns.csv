@@ -1,0 +1,8 @@
+TimeCreated,TargetUserName,WorkstationName,EventId,Keywords
+2024-03-15T10:00:00Z,victim_user,DC01,4625,Audit Failure
+2024-03-15T10:01:00Z,victim_user,DC01,4625,Audit Failure
+2024-03-15T10:02:00Z,victim_user,DC01,4625,Audit Failure
+2024-03-15T10:03:00Z,victim_user,DC01,4625,Audit Failure
+2024-03-15T10:04:00Z,victim_user,DC01,4625,Audit Failure
+2024-03-15T10:05:00Z,victim_user,DC01,4625,Audit Failure
+2024-03-15T10:06:00Z,victim_user,DC01,4624,Audit Success

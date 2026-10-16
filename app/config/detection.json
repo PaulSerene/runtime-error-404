@@ -1,0 +1,23 @@
+{
+  "_comment": "Detection thresholds. Edit here to tune without touching rule code.",
+
+  "failureCount":            5,
+  "failureWindowMinutes":   10,
+
+  "burstFailures":           3,
+  "burstWindowMinutes":     15,
+
+  "sprayAccounts":           5,
+  "sprayWindowMinutes":     10,
+
+  "offHoursStart":           6,
+  "offHoursEnd":            22,
+
+  "minBaselineLogins":      10,
+  "baselineEarliestPct":    20,
+
+  "newHostCount":            3,
+  "newHostWindowHours":     24,
+
+  "incidentWindowMinutes":  60
+}
