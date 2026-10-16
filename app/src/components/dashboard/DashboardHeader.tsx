@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { exportCsv, exportHtmlReport } from "@/lib/exports";
+import { exportCsv, exportHtmlReport, exportJson } from "@/lib/exports";
 import type { AnalysisResult } from "@/types";
 import type { DashboardView } from "./AppSidebar";
 
@@ -126,10 +126,22 @@ export function DashboardHeader({
             size="xs"
             onClick={() => exportCsv(result)}
             className="border-slate-800 bg-slate-900/60 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300"
-            title="Export Incidents CSV"
+            title="Export Incidents CSV (Formula Injection Safe)"
           >
             <Download className="h-3.5 w-3.5 sm:mr-1" />
             <span className="hidden sm:inline">CSV</span>
+          </Button>
+
+          <Button
+            id="export-json-btn"
+            variant="outline"
+            size="xs"
+            onClick={() => exportJson(result)}
+            className="border-slate-800 bg-slate-900/60 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300"
+            title="Download JSON Investigation Findings"
+          >
+            <Download className="h-3.5 w-3.5 sm:mr-1" />
+            <span className="hidden sm:inline">JSON</span>
           </Button>
 
           <Button

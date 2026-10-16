@@ -26,12 +26,16 @@ export type RequiredField = keyof Pick<
  * Add an entry here whenever a new rule is introduced.
  */
 export const RULE_REQUIRED_FIELDS: Readonly<Record<string, readonly RequiredField[]>> = {
-  "RULE-BRUTE-FORCE":        ["username", "result"],
+  "RULE-BRUTE-FORCE":          ["username", "result"],
   "RULE-FAILURE-THEN-SUCCESS": ["username", "sourceIp", "result"],
-  "RULE-PASSWORD-SPRAY":     ["sourceIp", "username", "result"],
-  "RULE-OFF-HOURS":          ["username", "result"],
-  "RULE-NEW-SOURCE-IP":      ["username", "sourceIp", "result"],
-  "RULE-LATERAL-MOVEMENT":   ["username", "host"],
+  "RULE-PASSWORD-SPRAY":       ["sourceIp", "username", "result"],
+  "RULE-OFF-HOURS":            ["username", "result"],
+  "RULE-NEW-SOURCE-IP":        ["username", "sourceIp", "result"],
+  "RULE-UNFAMILIAR-HOST":      ["username", "host", "result"],
+  "RULE-LATERAL-MOVEMENT":     ["username", "host"],
+  "RULE-UNKNOWN-ACCOUNT":      ["result"],
+  "RULE-IMPOSSIBLE-TRAVEL":    ["username", "result"],
+  "RULE-ATTACK-SEQUENCE":      ["username", "result", "host"],
 } as const;
 
 // ─── Skip record ──────────────────────────────────────────────────────────────

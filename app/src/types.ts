@@ -21,6 +21,24 @@ export interface LogEvent {
   rawRow: string;
   /** Analyst flags attached during analysis, e.g. ["off-hours", "privileged"]. */
   flags: string[];
+  /** Original CSV row line number (1-based, excluding header). */
+  rawLineNumber?: number;
+  /** Name of source CSV file if available. */
+  sourceFile?: string;
+  /** Event/session identifier if available. */
+  eventId?: string;
+  /** Authentication protocol / service / application if available. */
+  authProtocol?: string;
+  /** Source and destination ports if available. */
+  sourcePort?: string;
+  destPort?: string;
+  /** Geographic location fields if available. */
+  geoCity?: string;
+  geoCountry?: string;
+  /** Client user agent if available. */
+  userAgent?: string;
+  /** Detailed sub-status code or failure reason (e.g., 0xC0000064) */
+  subStatus?: string;
 }
 
 // ─── Alert ───────────────────────────────────────────────────────────────────
@@ -42,6 +60,17 @@ export interface Alert {
   explanation: string;
   /** Rule-specific structured data (thresholds hit, counts, etc.). */
   details: Record<string, unknown>;
+  /** Distinguishes deterministic rule match from statistical anomaly. */
+  kind?: "rule" | "anomaly";
+  /** Statistical anomaly details (observed vs baseline) when kind === 'anomaly'. */
+  anomalyDetails?: {
+    metric: string;
+    observed: number;
+    baseline: number;
+    threshold: number;
+    method: string;
+    unit?: string;
+  };
 }
 
 // ─── Incident ─────────────────────────────────────────────────────────────────
@@ -68,6 +97,18 @@ export interface Incident {
    * Findings are "suspicious indications" – never "confirmed compromise".
    */
   disposition: "suspicious";
+  /** Affected source IP addresses across constituent alerts. */
+  affectedIps?: string[];
+  /** Affected destination hosts across constituent alerts. */
+  affectedHosts?: string[];
+  /** Reason why constituent findings were correlated into this incident. */
+  correlationReason?: string;
+  /** Caveats and missing contextual data that limit analysis confidence. */
+  dataLimitations?: string[];
+  /** Context-aware suppressions or reductions applied. */
+  appliedContext?: string[];
+  /** Types of detections in this incident: rule, anomaly, or both. */
+  detectionTypes?: ("rule" | "anomaly")[];
 }
 
 // ─── Ingest report ───────────────────────────────────────────────────────────
@@ -93,6 +134,27 @@ export interface IngestReport {
   missingFieldCounts: Record<string, number>;
   rejectedByReason?: Record<string, number>;
   parseReport?: ParseReport;
+}
+
+// ─── Capabilities & Schema Mapping ──────────────────────────────────────────
+
+export interface DetectionCapability {
+  id: string;
+  name: string;
+  category: "rule" | "anomaly";
+  status: "enabled" | "disabled" | "reduced_confidence";
+  requiredFields: string[];
+  missingFields: string[];
+  reason: string;
+}
+
+export interface ColumnMappingInfo {
+  rawHeader: string;
+  canonicalField: string | null;
+  confidence: number; // 0.0 - 1.0
+  isAmbiguous: boolean;
+  alternateCandidates: string[];
+  sampleValues: string[];
 }
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -128,6 +190,8 @@ export interface Config {
   /** Usernames that have privileged / admin access. */
   privilegedAccounts: string[];
   ipLocations: IpLocationEntry[];
+  /** User-provided explicit column overrides (rawHeader -> canonicalField) */
+  columnOverrides?: Record<string, string>;
 }
 
 // ─── Top-level result ────────────────────────────────────────────────────────
@@ -139,4 +203,9 @@ export interface AnalysisResult {
   alerts: Alert[];
   incidents: Incident[];
   config: Config;
+  /** Dynamic capability status matrix for all detection categories. */
+  capabilities?: DetectionCapability[];
+  /** Evaluated schema column mappings with confidence and ambiguity flags. */
+  schemaMappings?: ColumnMappingInfo[];
 }
+

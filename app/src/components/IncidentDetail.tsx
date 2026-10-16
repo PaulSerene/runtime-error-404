@@ -167,13 +167,50 @@ export function IncidentDetail({ incident, events, onClose }: Props) {
         </div>
 
         {/* Narrative Summary */}
-        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4.5 space-y-2">
+        <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-4.5 space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
             <FileSearch className="h-3.5 w-3.5 text-cyan-400" /> Incident Assessment
           </h3>
-          <p className="text-xs text-slate-200 leading-relaxed">
+          <p className="text-xs text-slate-200 leading-relaxed font-medium">
             {incident.explanation}
           </p>
+
+          {incident.correlationReason && (
+            <p className="text-[11px] text-cyan-300/80 bg-cyan-950/30 border border-cyan-800/30 rounded px-2.5 py-1.5">
+              <strong>Correlation Logic:</strong> {incident.correlationReason}
+            </p>
+          )}
+
+          {((incident.affectedHosts && incident.affectedHosts.length > 0) ||
+            (incident.affectedIps && incident.affectedIps.length > 0)) && (
+            <div className="flex flex-wrap gap-4 pt-1 text-xs">
+              {incident.affectedHosts && incident.affectedHosts.length > 0 && (
+                <div className="flex items-center gap-1.5 text-slate-400">
+                  <Terminal className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>Hosts:</span>
+                  <span className="font-mono text-slate-200">{incident.affectedHosts.join(", ")}</span>
+                </div>
+              )}
+              {incident.affectedIps && incident.affectedIps.length > 0 && (
+                <div className="flex items-center gap-1.5 text-slate-400">
+                  <Network className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>IPs:</span>
+                  <span className="font-mono text-slate-200">{incident.affectedIps.join(", ")}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {incident.dataLimitations && incident.dataLimitations.length > 0 && (
+            <div className="pt-2 border-t border-slate-800/60 text-[10px] text-slate-400 space-y-0.5">
+              <span className="text-slate-500 uppercase font-semibold">Offline Analysis Limitations:</span>
+              <ul className="list-disc pl-4 space-y-0.5 text-slate-400">
+                {incident.dataLimitations.map((lim, i) => (
+                  <li key={i}>{lim}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         {/* Risk Score Breakdown */}
@@ -192,47 +229,81 @@ export function IncidentDetail({ incident, events, onClose }: Props) {
         <div className="space-y-3">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
             <AlertTriangle className="h-3.5 w-3.5 text-cyan-400" />
-            Correlated Detection Alerts ({incident.alerts.length})
+            Correlated Detection Findings ({incident.alerts.length})
           </h3>
 
           <div className="space-y-2.5">
-            {incident.alerts.map((alert) => (
-              <div
-                key={alert.id}
-                className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 space-y-2 transition-all hover:border-slate-700"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-xs font-semibold text-cyan-300">
-                      {alert.ruleId}
-                    </span>
-                    <SeverityBadge severity={alert.severity} />
-                  </div>
-                  <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1">
-                    <Clock className="h-3 w-3 text-slate-500" />
-                    {fmt(alert.timeStart)}
-                  </span>
-                </div>
-
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {alert.explanation}
-                </p>
-
-                {Object.keys(alert.details).length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {Object.entries(alert.details).map(([k, v]) => (
-                      <span
-                        key={k}
-                        className="inline-flex items-center gap-1 rounded bg-slate-900 border border-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-400"
-                      >
-                        <span className="text-slate-500">{k}:</span>
-                        <span className="text-slate-300">{Array.isArray(v) ? v.join(", ") : String(v)}</span>
+            {incident.alerts.map((alert) => {
+              const isAnomaly = alert.kind === "anomaly";
+              return (
+                <div
+                  key={alert.id}
+                  className="rounded-xl border border-slate-800 bg-slate-950/50 p-4 space-y-2 transition-all hover:border-slate-700"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs font-semibold text-cyan-300">
+                        {alert.ruleId}
                       </span>
-                    ))}
+                      {isAnomaly ? (
+                        <Badge className="bg-teal-950/80 text-teal-300 border-teal-800/80 text-[10px]">
+                          STATISTICAL ANOMALY
+                        </Badge>
+                      ) : (
+                        <Badge className="bg-amber-950/80 text-amber-300 border-amber-800/80 text-[10px]">
+                          RULE MATCH
+                        </Badge>
+                      )}
+                      <SeverityBadge severity={alert.severity} />
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-400 flex items-center gap-1">
+                      <Clock className="h-3 w-3 text-slate-500" />
+                      {fmt(alert.timeStart)}
+                    </span>
                   </div>
-                )}
-              </div>
-            ))}
+
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    {alert.explanation}
+                  </p>
+
+                  {/* Anomaly observed vs baseline comparison */}
+                  {alert.anomalyDetails && (
+                    <div className="p-2.5 rounded-lg bg-teal-950/30 border border-teal-800/40 text-[11px] grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase">Metric</span>
+                        <span className="text-teal-300 font-medium">{alert.anomalyDetails.metric}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase">Observed</span>
+                        <span className="text-white font-mono font-bold">{alert.anomalyDetails.observed} {alert.anomalyDetails.unit ?? ""}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase">Baseline Median</span>
+                        <span className="text-slate-300 font-mono">{alert.anomalyDetails.baseline.toFixed(1)}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 block text-[10px] uppercase">Threshold (MAD)</span>
+                        <span className="text-amber-400 font-mono font-semibold">{alert.anomalyDetails.threshold.toFixed(1)}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {Object.keys(alert.details).length > 0 && !alert.anomalyDetails && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {Object.entries(alert.details).map(([k, v]) => (
+                        <span
+                          key={k}
+                          className="inline-flex items-center gap-1 rounded bg-slate-900 border border-slate-800 px-2 py-0.5 text-[10px] font-mono text-slate-400"
+                        >
+                          <span className="text-slate-500">{k}:</span>
+                          <span className="text-slate-300">{Array.isArray(v) ? v.join(", ") : String(v)}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
 

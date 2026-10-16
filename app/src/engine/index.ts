@@ -15,8 +15,14 @@ import { passwordSpray }     from "@/engine/rules/passwordSpray";
 import { unusualHour }       from "@/engine/rules/unusualHour";
 import { newIpOrLocation }   from "@/engine/rules/newIpOrLocation";
 import { newHostAccess }     from "@/engine/rules/newHostAccess";
+import { unfamiliarHost }    from "@/engine/rules/unfamiliarHost";
+import { unknownAccount }    from "@/engine/rules/unknownAccount";
+import { impossibleTravel }  from "@/engine/rules/impossibleTravel";
+import { attackSequence }    from "@/engine/rules/attackSequence";
 import { checkRequiredFields, type RuleSkip } from "@/engine/rules/guards";
 import { groupIntoIncidents } from "@/engine/incidents";
+import { detectStatisticalAnomalies } from "@/engine/statisticalAnomaly";
+import { evaluateCapabilities } from "@/engine/capabilities";
 
 import { RULE_ID as RF_ID }  from "@/engine/rules/repeatedFailures";
 import { RULE_ID as BTS_ID } from "@/engine/rules/burstThenSuccess";
@@ -24,6 +30,10 @@ import { RULE_ID as PS_ID }  from "@/engine/rules/passwordSpray";
 import { RULE_ID as UH_ID }  from "@/engine/rules/unusualHour";
 import { RULE_ID as NI_ID }  from "@/engine/rules/newIpOrLocation";
 import { RULE_ID as NH_ID }  from "@/engine/rules/newHostAccess";
+import { RULE_ID as UH2_ID } from "@/engine/rules/unfamiliarHost";
+import { RULE_ID as UA_ID }  from "@/engine/rules/unknownAccount";
+import { RULE_ID as IT_ID }  from "@/engine/rules/impossibleTravel";
+import { RULE_ID as AS_ID }  from "@/engine/rules/attackSequence";
 
 /**
  * Analyse a Windows Security-log CSV export.
@@ -46,7 +56,7 @@ export function analyze(
     : config.assets ?? [];
 
   // ipLoc: merge CSV-parsed entries on top of config.ipLocations
-  const ipLoc = config.ipLocations ?? [];
+  const ipLoc = config.ipLocations ? [...config.ipLocations] : [];
   if (ipLocCsv) {
     const parsed = parseIpLocationCsv(ipLocCsv);
     ipLoc.push(...parsed.map((p) => ({ cidr: p.cidr, location: p.location })));
@@ -59,7 +69,7 @@ export function analyze(
     thresholds: mergeDetectionDefaults(config.thresholds),
   };
 
-  const { events, report } = ingestCsv(csvText, mergedConfig);
+  const { events, report, schemaMappings } = ingestCsv(csvText, mergedConfig);
 
   // ── Baseline learning ─────────────────────────────────────────────────────
   const baselines = learnBaselines(events, mergedConfig);
@@ -80,17 +90,36 @@ export function analyze(
     return fn();
   }
 
-  const allAlerts = [
+  // ── 9 Deterministic Rule Categories ───────────────────────────────────────
+  const ruleAlerts = [
     ...runRule(RF_ID,  () => repeatedFailures(...ruleArgs)),
     ...runRule(BTS_ID, () => burstThenSuccess(...ruleArgs)),
     ...runRule(PS_ID,  () => passwordSpray(...ruleArgs)),
     ...runRule(UH_ID,  () => unusualHour(...ruleArgs)),
     ...runRule(NI_ID,  () => newIpOrLocation(...ruleArgs)),
     ...runRule(NH_ID,  () => newHostAccess(...ruleArgs)),
+    ...runRule(UH2_ID, () => unfamiliarHost(...ruleArgs)),
+    ...runRule(UA_ID,  () => unknownAccount(...ruleArgs)),
+    ...runRule(IT_ID,  () => impossibleTravel(...ruleArgs)),
+    ...runRule(AS_ID,  () => attackSequence(...ruleArgs)),
   ];
+
+  // ── Statistical Anomaly Detection (MAD & Distributional Analysis) ─────────
+  const anomalyAlerts = detectStatisticalAnomalies(events, mergedConfig);
+
+  // Combine both finding types
+  const allAlerts = [...ruleAlerts, ...anomalyAlerts];
 
   // ── Incident grouping + scoring ───────────────────────────────────────────
   const incidents = groupIntoIncidents(allAlerts, mergedConfig);
+
+  // ── Detection capabilities evaluation ─────────────────────────────────────
+  const capabilities = evaluateCapabilities(
+    events,
+    mergedConfig,
+    Boolean(ipLocCsv || (config.ipLocations && config.ipLocations.length > 0)),
+    Boolean(assetsCsv || (config.assets && config.assets.length > 0)),
+  );
 
   // ── Surface skips in the ingest report ────────────────────────────────────
   // Skips are recorded as InvalidRow-like entries so the UI's IngestPanel
@@ -111,5 +140,7 @@ export function analyze(
     alerts: allAlerts,
     incidents,
     config, // return original config, not the merged one
+    capabilities,
+    schemaMappings,
   };
 }

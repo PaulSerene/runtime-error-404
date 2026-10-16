@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { exportCsv, exportHtmlReport } from "@/lib/exports";
+import { exportCsv, exportHtmlReport, exportJson } from "@/lib/exports";
 import type { AnalysisResult } from "@/types";
 
 export type DashboardView = "overview" | "incidents" | "ingest" | "rules" | "upload";
@@ -217,20 +217,31 @@ export function AppSidebar({
             <p className="px-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
               Export Intelligence
             </p>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-1.5">
               <Button
                 variant="outline"
                 size="xs"
                 onClick={() => exportCsv(result)}
-                className="w-full border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[11px]"
+                className="w-full border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[10px] px-1"
+                title="CSV Export"
               >
                 <Download className="mr-1 h-3 w-3" /> CSV
               </Button>
               <Button
                 variant="outline"
                 size="xs"
+                onClick={() => exportJson(result)}
+                className="w-full border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[10px] px-1"
+                title="JSON Export"
+              >
+                <Download className="mr-1 h-3 w-3" /> JSON
+              </Button>
+              <Button
+                variant="outline"
+                size="xs"
                 onClick={() => exportHtmlReport(result)}
-                className="w-full border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[11px]"
+                className="w-full border-slate-700/80 bg-slate-900/60 text-slate-300 hover:border-cyan-500/40 hover:text-cyan-300 text-[10px] px-1"
+                title="HTML Report"
               >
                 <FileCode2 className="mr-1 h-3 w-3" /> HTML
               </Button>
@@ -243,6 +254,15 @@ export function AppSidebar({
               size="icon-xs"
               onClick={() => exportCsv(result)}
               title="Export CSV"
+              className="text-slate-400 hover:text-cyan-300"
+            >
+              <Download className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => exportJson(result)}
+              title="Export JSON"
               className="text-slate-400 hover:text-cyan-300"
             >
               <Download className="h-3.5 w-3.5" />

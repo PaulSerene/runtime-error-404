@@ -19,7 +19,7 @@
 
 import Papa from "papaparse";
 import type { LogEvent, IngestReport, Config, ParseReport } from "@/types";
-import { buildColumnMap } from "@/engine/ingest/columnMapper";
+import { buildColumnMap, inspectCsvSchema } from "@/engine/ingest/columnMapper";
 import { normalizeUsername, normalizeIp, isMachineAccount } from "@/engine/ingest/normalize";
 import { parseTimestamp, buildParseReport } from "@/engine/ingest/timestampParser";
 
@@ -155,6 +155,7 @@ export interface IngestResult {
   events: LogEvent[];
   report: IngestReport;
   parseReport: ParseReport;
+  schemaMappings?: import("@/types").ColumnMappingInfo[];
 }
 
 /**
@@ -177,6 +178,7 @@ export function ingestCsv(csvText: string, config: Config): IngestResult {
   let totalRows = 0;
 
   const events: LogEvent[] = [];
+  const sampleRows: Record<string, string>[] = [];
 
   // Capture headers on the first step call
   let colMap: Map<string, string> | null = null;
@@ -190,11 +192,17 @@ export function ingestCsv(csvText: string, config: Config): IngestResult {
       // Resolve column map once from the first row's meta
       if (colMap === null) {
         headers = rowResult.meta.fields ?? [];
-        colMap = buildColumnMap(headers, { silent: true });
+        colMap = buildColumnMap(headers, {
+          silent: true,
+          overrides: config.columnOverrides,
+        });
       }
 
       totalRows++;
       const row = rowResult.data;
+      if (sampleRows.length < 5) {
+        sampleRows.push({ ...row });
+      }
 
       // Re-assemble raw row string for id / dedup
       const rawRow = headers.map((h) => row[h] ?? "").join(",");
@@ -225,6 +233,14 @@ export function ingestCsv(csvText: string, config: Config): IngestResult {
       const eventType   = get("eventType");
       const rawResult   = get("result");
       const rawLogon    = get("logonType");
+      const eventId     = get("eventId") || undefined;
+      const authProtocol = get("authProtocol") || undefined;
+      const sourcePort  = get("sourcePort") || undefined;
+      const destPort    = get("destPort") || undefined;
+      const geoCity     = get("geoCity") || undefined;
+      const geoCountry  = get("geoCountry") || undefined;
+      const userAgent   = get("userAgent") || undefined;
+      const subStatus   = get("subStatus") || undefined;
 
       // Skip machine accounts
       if (isMachineAccount(rawUsername)) return;
@@ -264,6 +280,15 @@ export function ingestCsv(csvText: string, config: Config): IngestResult {
         logonType,
         rawRow,
         flags: [],
+        rawLineNumber: totalRows,
+        eventId,
+        authProtocol,
+        sourcePort,
+        destPort,
+        geoCity,
+        geoCountry,
+        userAgent,
+        subStatus,
       });
     },
   });
@@ -271,6 +296,10 @@ export function ingestCsv(csvText: string, config: Config): IngestResult {
   // ── Sort ONCE by timestamp (Step 8) ──────────────────────────────────────
   // All rules depend on this order; they must NOT sort again internally.
   events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+
+  const schemaMappings = headers.length > 0
+    ? inspectCsvSchema(headers, sampleRows, config.columnOverrides)
+    : undefined;
 
   const parseReport = buildParseReport(totalRows, events.length, invalidRows);
   const report: IngestReport = {
@@ -283,7 +312,7 @@ export function ingestCsv(csvText: string, config: Config): IngestResult {
     parseReport,
   };
 
-  return { events, report, parseReport };
+  return { events, report, parseReport, schemaMappings };
 }
 
 function bump(counter: Record<string, number>, key: string) {

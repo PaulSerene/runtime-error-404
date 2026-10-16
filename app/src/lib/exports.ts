@@ -15,9 +15,16 @@ function downloadBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
-function escCsv(v: unknown): string {
-  const s = String(v ?? "");
-  return s.includes(",") || s.includes('"') || s.includes("\n")
+/**
+ * Escapes CSV values and neutralizes potential spreadsheet formula injection.
+ * If a value begins with '=', '+', '-', '@', tab, or CR, it is prepended with a single quote.
+ */
+export function escCsv(v: unknown): string {
+  let s = String(v ?? "");
+  if (/^[\s]*[=+\-@\t\r]/.test(s)) {
+    s = `'${s}`;
+  }
+  return s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")
     ? `"${s.replace(/"/g, '""')}"`
     : s;
 }
@@ -34,8 +41,8 @@ function escHtml(s: string): string {
 
 /**
  * Generates one CSV row per alert across all incidents.
- * Columns: incidentId, username, score, severity, ruleId,
- *          timeStart, timeEnd, explanation, evidenceCount
+ * Columns: incidentId, username, score, severity, findingType, ruleId,
+ *          timeStart, timeEnd, explanation, evidenceCount, affectedHosts, affectedIps
  */
 export function exportCsv(result: AnalysisResult) {
   const header = [
@@ -43,11 +50,14 @@ export function exportCsv(result: AnalysisResult) {
     "username",
     "score",
     "severity",
+    "findingType",
     "ruleId",
     "timeStart",
     "timeEnd",
     "explanation",
     "evidenceCount",
+    "affectedHosts",
+    "affectedIps",
   ].join(",");
 
   const rows = result.incidents.flatMap((inc) =>
@@ -57,11 +67,14 @@ export function exportCsv(result: AnalysisResult) {
         inc.username,
         inc.score,
         inc.severity,
+        alert.kind === "anomaly" ? "Statistical Anomaly" : "Rule Match",
         alert.ruleId,
         alert.timeStart,
         alert.timeEnd,
         alert.explanation,
         alert.evidenceIds.length,
+        (inc.affectedHosts ?? []).join("; "),
+        (inc.affectedIps ?? []).join("; "),
       ]
         .map(escCsv)
         .join(","),
@@ -71,6 +84,33 @@ export function exportCsv(result: AnalysisResult) {
   const csv = [header, ...rows].join("\r\n");
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8;" }), `incidents_${ts}.csv`);
+}
+
+// ─── JSON export ─────────────────────────────────────────────────────────────
+
+export function exportJson(result: AnalysisResult) {
+  const data = {
+    exportedAt: new Date().toISOString(),
+    summary: {
+      totalEvents: result.events.length,
+      incidentCount: result.incidents.length,
+      alertCount: result.alerts.length,
+      ruleMatches: result.alerts.filter((a) => a.kind !== "anomaly").length,
+      statisticalAnomalies: result.alerts.filter((a) => a.kind === "anomaly").length,
+      invalidRows: result.ingestReport.invalidRows.length,
+      duplicatesRemoved: result.ingestReport.duplicatesRemoved,
+    },
+    capabilities: result.capabilities ?? [],
+    incidents: result.incidents,
+    dataLimitations: [
+      "Analysis conducted entirely offline without live external threat-intelligence lookups.",
+      "Findings represent suspicious indications for human analyst investigation, not confirmed compromise.",
+    ],
+  };
+
+  const jsonStr = JSON.stringify(data, null, 2);
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  downloadBlob(new Blob([jsonStr], { type: "application/json;charset=utf-8;" }), `soc_investigation_${ts}.json`);
 }
 
 // ─── HTML report ─────────────────────────────────────────────────────────────
@@ -83,15 +123,19 @@ const SEVERITY_COLOR: Record<string, string> = {
 };
 
 export function exportHtmlReport(result: AnalysisResult) {
-  const { incidents, events, ingestReport, config } = result;
+  const { incidents, events, ingestReport, config, capabilities } = result;
   const ts = new Date().toISOString();
   const tsDisplay = new Date().toLocaleString();
 
   const severityCount = (s: string) => incidents.filter((i) => i.severity === s).length;
+  const ruleCount = result.alerts.filter((a) => a.kind !== "anomaly").length;
+  const anomalyCount = result.alerts.filter((a) => a.kind === "anomaly").length;
 
   const summaryRows = [
     ["Total events", events.length.toLocaleString()],
     ["Incidents", incidents.length],
+    ["Rule Matches", ruleCount],
+    ["Statistical Anomalies", anomalyCount],
     ["Critical", severityCount("critical")],
     ["High", severityCount("high")],
     ["Medium", severityCount("medium")],
@@ -108,6 +152,24 @@ export function exportHtmlReport(result: AnalysisResult) {
     </tbody>
   </table>`;
 
+  const capabilityRows = (capabilities ?? [])
+    .map((cap) => {
+      const statusColor = cap.status === "enabled" ? "#22c55e" : cap.status === "reduced_confidence" ? "#eab308" : "#94a3b8";
+      return `<tr>
+        <td><strong>${escHtml(cap.name)}</strong> <code>(${escHtml(cap.id)})</code></td>
+        <td><span class="badge" style="background:${statusColor}20;color:${statusColor};border:1px solid ${statusColor}40">${cap.status.toUpperCase()}</span></td>
+        <td style="font-size:0.8rem;color:#cbd5e1">${escHtml(cap.reason)}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const capabilitiesTable = capabilities && capabilities.length > 0 ? `
+  <h2>Detection Capabilities & Coverage</h2>
+  <table>
+    <thead><tr><th>Detection</th><th>Status</th><th>Capability Rationale</th></tr></thead>
+    <tbody>${capabilityRows}</tbody>
+  </table>` : "";
+
   const incidentSections = incidents
     .slice()
     .sort((a, b) => b.score - a.score)
@@ -122,22 +184,36 @@ export function exportHtmlReport(result: AnalysisResult) {
 
       const alertItems = inc.alerts
         .map(
-          (a) => `
+          (a) => {
+            const isAnomaly = a.kind === "anomaly";
+            const kindBadge = isAnomaly
+              ? `<span class="badge" style="background:#06b6d420;color:#06b6d4;border:1px solid #06b6d440">STATISTICAL ANOMALY</span>`
+              : `<span class="badge" style="background:#f9731620;color:#f97316;border:1px solid #f9731640">RULE MATCH</span>`;
+            return `
         <div class="alert-card">
           <div class="alert-header">
             <span class="badge" style="background:${SEVERITY_COLOR[a.severity] ?? "#94a3b8"}20;color:${SEVERITY_COLOR[a.severity] ?? "#94a3b8"};border:1px solid ${SEVERITY_COLOR[a.severity] ?? "#94a3b8"}40">${a.severity.toUpperCase()}</span>
+            ${kindBadge}
             <code>${escHtml(a.ruleId)}</code>
             <span class="muted">${escHtml(a.id)}</span>
           </div>
           <p>${escHtml(a.explanation)}</p>
           <p class="muted">${escHtml(a.timeStart)} → ${escHtml(a.timeEnd)} · ${a.evidenceIds.length} evidence row(s)</p>
-        </div>`,
+        </div>`;
+          },
         )
         .join("");
 
       const triageList = inc.triageSteps
-        .map((step, i) => `<li>${escHtml(step.replace(/^\d+\.\s*/, ""))}</li>`)
+        .map((step) => `<li>${escHtml(step.replace(/^\d+\.\s*/, ""))}</li>`)
         .join("");
+
+      const hostList = inc.affectedHosts && inc.affectedHosts.length > 0
+        ? `<p class="muted"><strong>Affected Hosts:</strong> ${inc.affectedHosts.map(escHtml).join(", ")}</p>`
+        : "";
+      const ipList = inc.affectedIps && inc.affectedIps.length > 0
+        ? `<p class="muted"><strong>Source IPs:</strong> ${inc.affectedIps.map(escHtml).join(", ")}</p>`
+        : "";
 
       return `
     <section class="incident">
@@ -151,15 +227,18 @@ export function exportHtmlReport(result: AnalysisResult) {
           <span class="score-label">Risk Score</span>
         </div>
       </div>
-      <p class="user-label">👤 ${escHtml(inc.username)}</p>
+      <p class="user-label">👤 Account: <strong>${escHtml(inc.username)}</strong></p>
+      ${hostList}
+      ${ipList}
 
       <div class="disclaimer">
         ⚠️ <strong>Important:</strong> These are <em>suspicious indications</em>, not confirmed compromise.
-        An analyst must review, validate, and determine the appropriate response before taking action.
+        An analyst must review, validate, and determine the appropriate response before taking any action.
       </div>
 
       <h4>Explanation</h4>
       <p>${escHtml(inc.explanation)}</p>
+      ${inc.correlationReason ? `<p style="font-size:0.85rem;color:#94a3b8"><em>${escHtml(inc.correlationReason)}</em></p>` : ""}
 
       <h4>Score Breakdown</h4>
       <table>
@@ -167,10 +246,10 @@ export function exportHtmlReport(result: AnalysisResult) {
         <tbody>${breakdownRows}</tbody>
       </table>
 
-      <h4>Constituent Alerts (${inc.alerts.length})</h4>
+      <h4>Constituent Findings (${inc.alerts.length})</h4>
       ${alertItems}
 
-      <h4>Recommended Triage Steps</h4>
+      <h4>Recommended Human Investigation & Response Steps</h4>
       <ol>${triageList}</ol>
     </section>`;
     })
@@ -181,7 +260,7 @@ export function exportHtmlReport(result: AnalysisResult) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Log Analysis Report — ${escHtml(tsDisplay)}</title>
+  <title>SOC Investigation Report — ${escHtml(tsDisplay)}</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f172a;color:#e2e8f0;line-height:1.6;padding:2rem}
@@ -207,26 +286,22 @@ export function exportHtmlReport(result: AnalysisResult) {
     .score-box{display:flex;flex-direction:column;align-items:flex-end}
     .score-num{font-size:2rem;font-weight:900;line-height:1}
     .score-label{font-size:.65rem;color:#64748b;text-transform:uppercase;letter-spacing:.1em}
-    .user-label{font-size:.9rem;font-weight:600;color:#e2e8f0;margin-bottom:1rem}
+    .user-label{font-size:.9rem;font-weight:600;color:#e2e8f0;margin-bottom:.5rem}
     .disclaimer{background:#451a03;border:1px solid #92400e;border-radius:.5rem;padding:.75rem 1rem;margin:.75rem 0 1rem;font-size:.8rem;color:#fcd34d;line-height:1.5}
     .alert-card{background:#0f172a;border:1px solid #334155;border-radius:.5rem;padding:1rem;margin-bottom:.75rem}
     .alert-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem;flex-wrap:wrap}
     .muted{color:#64748b;font-size:.8rem}
     ol{padding-left:1.5rem}
     ol li{margin-bottom:.5rem;font-size:.875rem;color:#cbd5e1}
-    .summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem;margin-bottom:1.5rem}
-    .stat-card{background:#1e293b;border-radius:.5rem;padding:1rem;text-align:center}
-    .stat-val{font-size:1.75rem;font-weight:800;color:#fff}
-    .stat-label{font-size:.7rem;color:#64748b;text-transform:uppercase;letter-spacing:.08em}
     footer{margin-top:3rem;padding-top:1rem;border-top:1px solid #1e293b;color:#475569;font-size:.75rem;text-align:center}
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>🛡️ Log Analysis Report</h1>
-    <p class="subtitle">Generated: ${escHtml(tsDisplay)} · Timezone: ${escHtml(config.timezone)}</p>
+    <h1>🛡️ SOC Investigation Report</h1>
+    <p class="subtitle">Generated: ${escHtml(tsDisplay)} · Timezone: ${escHtml(config.timezone)} · Execution: Offline Client-Side</p>
     <div class="config-strip">
-      <span class="config-pill">Training: ${escHtml(config.trainingPeriod.start.slice(0, 10))} → ${escHtml(config.trainingPeriod.end.slice(0, 10))}</span>
+      <span class="config-pill">Baseline Calibration: ${escHtml(config.trainingPeriod.start.slice(0, 10))} → ${escHtml(config.trainingPeriod.end.slice(0, 10))}</span>
       ${config.approvedAccounts.map((a) => `<span class="config-pill" style="color:#4ade80">✓ ${escHtml(a)}</span>`).join("")}
       ${config.vpnCidrs.map((c) => `<span class="config-pill" style="color:#60a5fa">VPN: ${escHtml(c)}</span>`).join("")}
     </div>
@@ -235,12 +310,14 @@ export function exportHtmlReport(result: AnalysisResult) {
   <h2>Summary</h2>
   ${summaryTable}
 
-  <h2>Incidents (${incidents.length} total, sorted by risk score)</h2>
-  ${incidents.length === 0 ? '<p style="color:#4ade80">✅ No suspicious activity detected.</p>' : incidentSections}
+  ${capabilitiesTable}
+
+  <h2>Correlated Incidents (${incidents.length} total, sorted by risk score)</h2>
+  ${incidents.length === 0 ? '<p style="color:#4ade80">✅ No suspicious activity detected in evaluated dataset.</p>' : incidentSections}
 
   <footer>
-    This report was generated automatically. All findings represent <strong>suspicious indications only</strong>
-    and require analyst review before any action is taken. Synthetic testing does not establish real-world performance.
+    Adaptive Offline SOC Analysis Platform · Fully Local Execution · All findings represent <strong>suspicious indications only</strong>
+    and require human analyst validation before any containment or remediation action is taken.
     Generated at ${escHtml(ts)}.
   </footer>
 </body>
@@ -249,3 +326,4 @@ export function exportHtmlReport(result: AnalysisResult) {
   const fileTs = ts.replace(/[:.]/g, "-").slice(0, 19);
   downloadBlob(new Blob([html], { type: "text/html;charset=utf-8;" }), `report_${fileTs}.html`);
 }
+

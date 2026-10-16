@@ -142,17 +142,17 @@ export function parseTimestamp(raw: string, _timezone = "UTC"): string | null {
     }
   }
 
-  // ── Format 3: YYYY/MM/DD[T ]HH:MM[:SS][.mmm][TZ] ──────────────────────────
+  // ── Format 3: YYYY/MM/DD[ [T ]HH:MM[:SS][.mmm][TZ]] ──────────────────────
   const slashYmdMatch = s.match(
-    /^(\d{4})\/(\d{1,2})\/(\d{1,2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?$/i
+    /^(\d{4})\/(\d{1,2})\/(\d{1,2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?)?$/i
   );
   if (slashYmdMatch) {
     const [, yr, mo, da, hr, mn, sc, msPart, tzPart] = slashYmdMatch;
     const y = parseInt(yr, 10);
     const m = parseInt(mo, 10);
     const d = parseInt(da, 10);
-    const h = parseInt(hr, 10);
-    const min = parseInt(mn, 10);
+    const h = hr !== undefined ? parseInt(hr, 10) : 0;
+    const min = mn !== undefined ? parseInt(mn, 10) : 0;
     const sVal = sc ? parseInt(sc, 10) : 0;
 
     if (validateComponents(y, m, d, h, min, sVal)) {
@@ -164,18 +164,18 @@ export function parseTimestamp(raw: string, _timezone = "UTC"): string | null {
     }
   }
 
-  // ── Format 4: MM/DD/YYYY[T ]HH:MM[:SS] [AM|PM] [TZ] (US Slash MDY) ─────────
+  // ── Format 4: MM/DD/YYYY[ [T ]HH:MM[:SS] [AM|PM] [TZ]] (US Slash MDY) ─────
   const slashMdyMatch = s.match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(AM|PM|am|pm)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?$/i
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(AM|PM|am|pm)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?)?$/i
   );
   if (slashMdyMatch) {
     const [, mo, da, yr, hr, mn, sc, msPart, ampm, tzPart] = slashMdyMatch;
     const y = parseInt(yr, 10);
     const m = parseInt(mo, 10);
     const d = parseInt(da, 10);
-    const adjHr = adjust12Hour(hr, ampm);
+    const adjHr = hr !== undefined ? adjust12Hour(hr, ampm) : "00";
     const h = parseInt(adjHr, 10);
-    const min = parseInt(mn, 10);
+    const min = mn !== undefined ? parseInt(mn, 10) : 0;
     const sVal = sc ? parseInt(sc, 10) : 0;
 
     if (validateComponents(y, m, d, h, min, sVal)) {
@@ -189,16 +189,16 @@ export function parseTimestamp(raw: string, _timezone = "UTC"): string | null {
 
   // ── Format 5: DD/MM/YYYY or DD.MM.YYYY (International format) ─────────────
   const intlMatch = s.match(
-    /^(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{4})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(AM|PM|am|pm)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?$/i
+    /^(\d{1,2})[\/\.](\d{1,2})[\/\.](\d{4})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(AM|PM|am|pm)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?)?$/i
   );
   if (intlMatch) {
     const [, da, mo, yr, hr, mn, sc, msPart, ampm, tzPart] = intlMatch;
     const y = parseInt(yr, 10);
     const d = parseInt(da, 10);
     const m = parseInt(mo, 10);
-    const adjHr = adjust12Hour(hr, ampm);
+    const adjHr = hr !== undefined ? adjust12Hour(hr, ampm) : "00";
     const h = parseInt(adjHr, 10);
-    const min = parseInt(mn, 10);
+    const min = mn !== undefined ? parseInt(mn, 10) : 0;
     const sVal = sc ? parseInt(sc, 10) : 0;
 
     if (validateComponents(y, m, d, h, min, sVal)) {
@@ -212,7 +212,7 @@ export function parseTimestamp(raw: string, _timezone = "UTC"): string | null {
 
   // ── Format 6: DD-Mon-YYYY (e.g. 15-Mar-2024 14:23:01) ──────────────────────
   const ddMonMatch = s.match(
-    /^(\d{1,2})[-\/ ]([A-Za-z]{3})[-\/ ](\d{4})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(AM|PM|am|pm)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?$/i
+    /^(\d{1,2})[-\/ ]([A-Za-z]{3})[-\/ ](\d{4})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.(\d+))?\s*(AM|PM|am|pm)?\s*(Z|[+-]\d{1,2}(?::?\d{2})?)?)?$/i
   );
   if (ddMonMatch) {
     const [, da, monStr, yr, hr, mn, sc, msPart, ampm, tzPart] = ddMonMatch;
@@ -221,9 +221,9 @@ export function parseTimestamp(raw: string, _timezone = "UTC"): string | null {
       const y = parseInt(yr, 10);
       const m = parseInt(mo, 10);
       const d = parseInt(da, 10);
-      const adjHr = adjust12Hour(hr, ampm);
+      const adjHr = hr !== undefined ? adjust12Hour(hr, ampm) : "00";
       const h = parseInt(adjHr, 10);
-      const min = parseInt(mn, 10);
+      const min = mn !== undefined ? parseInt(mn, 10) : 0;
       const sVal = sc ? parseInt(sc, 10) : 0;
 
       if (validateComponents(y, m, d, h, min, sVal)) {

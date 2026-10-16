@@ -40,6 +40,13 @@ export function OverviewView({ result, onGoToIncidents, showNoBaseline }: Props)
   const severityCount = (s: string) => incidents.filter((i) => i.severity === s).length;
   const totalIncidents = incidents.length;
 
+  const ruleMatches = result.alerts.filter((a) => a.kind !== "anomaly").length;
+  const anomalyMatches = result.alerts.filter((a) => a.kind === "anomaly").length;
+  const affectedAccounts = new Set(incidents.map((i) => i.username)).size;
+  const affectedHostsCount = new Set(incidents.flatMap((i) => i.affectedHosts ?? [])).size;
+  const enabledCaps = result.capabilities?.filter((c) => c.status === "enabled").length ?? 0;
+  const totalCaps = result.capabilities?.length ?? 11;
+
   const userMap: Record<string, number> = {};
   for (const inc of incidents) {
     userMap[inc.username] = (userMap[inc.username] ?? 0) + 1;
@@ -71,13 +78,14 @@ export function OverviewView({ result, onGoToIncidents, showNoBaseline }: Props)
         </div>
       )}
 
+      {/* Top Telemetry & Investigation Metrics */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <StatCard title="Total Events" value={events.length.toLocaleString()} icon={<Activity className="h-4 w-4" />} accent="cyan" sub="parsed telemetry" />
-        <StatCard title="Incidents" value={totalIncidents} icon={<Shield className="h-4 w-4" />} accent="blue" sub="correlated chains" />
-        <StatCard title="Critical" value={severityCount("critical")} icon={<AlertTriangle className="h-4 w-4" />} accent="red" sub="immediate action" />
-        <StatCard title="High" value={severityCount("high")} icon={<AlertTriangle className="h-4 w-4" />} accent="orange" sub="investigate soon" />
-        <StatCard title="Invalid Rows" value={ingestReport.invalidRows.length} sub={`of ${ingestReport.totalRows.toLocaleString()} rows`} icon={<FileWarning className="h-4 w-4" />} accent={ingestReport.invalidRows.length > 0 ? "yellow" : "green"} />
-        <StatCard title="Duplicates" value={ingestReport.duplicatesRemoved} icon={<Copy className="h-4 w-4" />} accent="default" sub="suppressed" />
+        <StatCard title="Incidents" value={totalIncidents} icon={<Shield className="h-4 w-4" />} accent="blue" sub={`${affectedAccounts} account(s), ${affectedHostsCount} host(s)`} />
+        <StatCard title="Rule Matches" value={ruleMatches} icon={<ShieldCheck className="h-4 w-4" />} accent="orange" sub="deterministic rules" />
+        <StatCard title="Statistical Anomalies" value={anomalyMatches} icon={<Activity className="h-4 w-4" />} accent="cyan" sub="MAD baseline shifts" />
+        <StatCard title="Capability Coverage" value={`${enabledCaps}/${totalCaps}`} icon={<TrendingUp className="h-4 w-4" />} accent="green" sub="detection methods active" />
+        <StatCard title="Data Quality" value={ingestReport.invalidRows.length === 0 ? "100%" : `${ingestReport.validRows}/${ingestReport.totalRows}`} sub={ingestReport.invalidRows.length > 0 ? `${ingestReport.invalidRows.length} invalid` : "0 invalid rows"} icon={<FileWarning className="h-4 w-4" />} accent={ingestReport.invalidRows.length > 0 ? "yellow" : "green"} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">

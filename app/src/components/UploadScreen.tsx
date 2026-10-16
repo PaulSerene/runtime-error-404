@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/utils";
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { AnalysisResult, Config } from "@/types";
 import {
   Upload,
@@ -18,6 +18,8 @@ import {
   X,
   Loader2,
   AlertCircle,
+  AlertTriangle,
+  Info,
   Shield,
   ShieldAlert,
   Sliders,
@@ -36,6 +38,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { DateRangePreviewDialog } from "@/components/DateRangePreviewDialog";
+import { SchemaMappingDialog } from "@/components/SchemaMappingDialog";
+import {
+  detectDateRangeFromFiles,
+  computeDatasetFingerprint,
+  saveConfirmedBaseline,
+  getConfirmedBaseline,
+  getLastSavedBaseline,
+  formatIsoToDateInput,
+  type OverallDetectionResult,
+  type InputCsvFile,
+} from "@/lib/dateDetector";
 
 // ─── Local form state ────────────────────────────────────────────────────────
 interface UploadConfig {
@@ -206,7 +220,7 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
-function buildConfig(cfg: UploadConfig): Config {
+function buildConfig(cfg: UploadConfig, columnOverrides?: Record<string, string>): Config {
   return {
     thresholds: {
       failureCount: cfg.failureCount,
@@ -217,8 +231,8 @@ function buildConfig(cfg: UploadConfig): Config {
       sprayWindowMinutes: cfg.sprayWindowMinutes,
     },
     trainingPeriod: {
-      start: cfg.trainingStart ? `${cfg.trainingStart}T00:00:00Z` : "2024-02-01T00:00:00Z",
-      end: cfg.trainingEnd ? `${cfg.trainingEnd}T23:59:59Z` : "2024-02-29T23:59:59Z",
+      start: cfg.trainingStart ? `${cfg.trainingStart}T00:00:00Z` : "",
+      end: cfg.trainingEnd ? `${cfg.trainingEnd}T23:59:59Z` : "",
     },
     timezone: cfg.timezone,
     maintenanceWindows: cfg.maintenanceWindows
@@ -238,6 +252,7 @@ function buildConfig(cfg: UploadConfig): Config {
     assets: [],
     privilegedAccounts: [],
     ipLocations: [],
+    columnOverrides,
   };
 }
 
@@ -253,22 +268,97 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [cfg, setCfg] = useState<UploadConfig>({
-    logCsv: null,
-    assetsCsv: null,
-    ipLocationCsv: null,
-    trainingStart: "2024-02-01",
-    trainingEnd: "2024-02-29",
-    timezone: "UTC",
-    failureCount: 5,
-    failureWindowMinutes: 10,
-    burstFailures: 3,
-    burstWindowMinutes: 15,
-    sprayAccounts: 5,
-    sprayWindowMinutes: 10,
-    maintenanceWindows: [{ start: "2024-03-10T02:00", end: "2024-03-10T04:00" }],
-    approvedAccounts: "svc-backup, svc-monitor",
-    vpnCidrs: "10.100.0.0/16, 172.20.0.0/14",
+  // Schema Mapping state
+  const [schemaModalOpen, setSchemaModalOpen] = useState(false);
+  const [columnOverrides, setColumnOverrides] = useState<Record<string, string>>({});
+
+  // Range detection and persistence state
+  const [detectingRange, setDetectingRange] = useState(false);
+  const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
+  const [detectionResult, setDetectionResult] = useState<OverallDetectionResult | null>(null);
+  const [currentFingerprint, setCurrentFingerprint] = useState<string>("");
+
+  const [datesSource, setDatesSource] = useState<
+    "blank" | "manual" | "detected" | "restored_saved" | "restored_no_files"
+  >(() => {
+    if (typeof window !== "undefined") {
+      const last = getLastSavedBaseline();
+      if (last?.trainingStart && last?.trainingEnd) {
+        return "restored_no_files";
+      }
+    }
+    return "blank";
+  });
+
+  const datesSourceRef = useRef(datesSource);
+  useEffect(() => {
+    datesSourceRef.current = datesSource;
+  }, [datesSource]);
+
+  const [statusNotice, setStatusNotice] = useState<{
+    type: "restored_no_files" | "restored_saved" | "saved_success";
+    message: string;
+  } | null>(() => {
+    if (typeof window !== "undefined") {
+      const last = getLastSavedBaseline();
+      if (last?.trainingStart && last?.trainingEnd) {
+        return {
+          type: "restored_no_files",
+          message: `Notice: Baseline dates (${last.trainingStart} to ${last.trainingEnd}) were restored from your previous session without files uploaded and may not match files uploaded later.`,
+        };
+      }
+    }
+    return null;
+  });
+
+  const [detectedMinDate, setDetectedMinDate] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      const last = getLastSavedBaseline();
+      if (last?.detectedMinIso) {
+        return formatIsoToDateInput(last.detectedMinIso, last.timezone || "UTC");
+      }
+    }
+    return null;
+  });
+
+  const [detectedMaxDate, setDetectedMaxDate] = useState<string | null>(() => {
+    if (typeof window !== "undefined") {
+      const last = getLastSavedBaseline();
+      if (last?.detectedMaxIso) {
+        return formatIsoToDateInput(last.detectedMaxIso, last.timezone || "UTC");
+      }
+    }
+    return null;
+  });
+
+  const [cfg, setCfg] = useState<UploadConfig>(() => {
+    let initialStart = "";
+    let initialEnd = "";
+    if (typeof window !== "undefined") {
+      const last = getLastSavedBaseline();
+      if (last?.trainingStart && last?.trainingEnd) {
+        initialStart = last.trainingStart;
+        initialEnd = last.trainingEnd;
+      }
+    }
+
+    return {
+      logCsv: null,
+      assetsCsv: null,
+      ipLocationCsv: null,
+      trainingStart: initialStart,
+      trainingEnd: initialEnd,
+      timezone: "UTC",
+      failureCount: 5,
+      failureWindowMinutes: 10,
+      burstFailures: 3,
+      burstWindowMinutes: 15,
+      sprayAccounts: 5,
+      sprayWindowMinutes: 10,
+      maintenanceWindows: [{ start: "2024-03-10T02:00", end: "2024-03-10T04:00" }],
+      approvedAccounts: "svc-backup, svc-monitor",
+      vpnCidrs: "10.100.0.0/16, 172.20.0.0/14",
+    };
   });
 
   const set = <K extends keyof UploadConfig>(k: K, v: UploadConfig[K]) =>
@@ -279,8 +369,202 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
   const delMaint = (i: number) =>
     set("maintenanceWindows", cfg.maintenanceWindows.filter((_, j) => j !== i));
 
+  // Sync dataset fingerprint whenever files change
+  useEffect(() => {
+    let cancelled = false;
+
+    async function syncDataset() {
+      const fileList: { role: "log" | "assets" | "ipLocation"; content: string }[] = [];
+      try {
+        if (cfg.logCsv) {
+          const t = await readFileAsText(cfg.logCsv);
+          fileList.push({ role: "log", content: t });
+        }
+        if (cfg.assetsCsv) {
+          const t = await readFileAsText(cfg.assetsCsv);
+          fileList.push({ role: "assets", content: t });
+        }
+        if (cfg.ipLocationCsv) {
+          const t = await readFileAsText(cfg.ipLocationCsv);
+          fileList.push({ role: "ipLocation", content: t });
+        }
+      } catch {
+        return;
+      }
+
+      if (cancelled) return;
+
+      const fp = await computeDatasetFingerprint(fileList);
+      if (cancelled) return;
+      setCurrentFingerprint(fp);
+
+      if (fp) {
+        const saved = getConfirmedBaseline(fp);
+        if (saved) {
+          // Dataset matches a previously confirmed baseline
+          setCfg((c) => ({
+            ...c,
+            trainingStart: saved.trainingStart,
+            trainingEnd: saved.trainingEnd,
+          }));
+          setDatesSource("restored_saved");
+          setStatusNotice({
+            type: "restored_saved",
+            message: `Restored confirmed baseline dates (${saved.trainingStart} to ${saved.trainingEnd}) for this dataset.`,
+          });
+          if (saved.detectedMinIso && saved.detectedMaxIso) {
+            setDetectedMinDate(formatIsoToDateInput(saved.detectedMinIso, cfg.timezone));
+            setDetectedMaxDate(formatIsoToDateInput(saved.detectedMaxIso, cfg.timezone));
+          }
+        } else {
+          // Different dataset without saved dates:
+          // Do not silently apply another dataset's saved dates
+          if (
+            datesSourceRef.current === "restored_no_files" ||
+            datesSourceRef.current === "restored_saved"
+          ) {
+            setCfg((c) => ({
+              ...c,
+              trainingStart: "",
+              trainingEnd: "",
+            }));
+            setDatesSource("blank");
+            setStatusNotice(null);
+          }
+        }
+      }
+    }
+
+    syncDataset();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cfg.logCsv, cfg.assetsCsv, cfg.ipLocationCsv, cfg.timezone]);
+
+  async function handleDetectDateRange() {
+    if (!cfg.logCsv && !cfg.assetsCsv && !cfg.ipLocationCsv) {
+      setError("Please upload at least one CSV file before detecting the date range.");
+      return;
+    }
+
+    setDetectingRange(true);
+    setError(null);
+
+    try {
+      const files: InputCsvFile[] = [];
+      if (cfg.logCsv) {
+        const text = await readFileAsText(cfg.logCsv);
+        files.push({ role: "log", fileName: cfg.logCsv.name, content: text });
+      }
+      if (cfg.assetsCsv) {
+        const text = await readFileAsText(cfg.assetsCsv);
+        files.push({ role: "assets", fileName: cfg.assetsCsv.name, content: text });
+      }
+      if (cfg.ipLocationCsv) {
+        const text = await readFileAsText(cfg.ipLocationCsv);
+        files.push({ role: "ipLocation", fileName: cfg.ipLocationCsv.name, content: text });
+      }
+
+      const result = detectDateRangeFromFiles(files, cfg.timezone);
+      setDetectionResult(result);
+      setPreviewDialogOpen(true);
+    } catch (err) {
+      setError(
+        `Failed to inspect CSV timestamps: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setDetectingRange(false);
+    }
+  }
+
+  async function handleApplyDetectedRange(applied: { start: string; end: string }) {
+    setCfg((c) => ({
+      ...c,
+      trainingStart: applied.start,
+      trainingEnd: applied.end,
+    }));
+    setDatesSource("detected");
+    setPreviewDialogOpen(false);
+
+    if (detectionResult?.overallEarliestDateInput && detectionResult?.overallLatestDateInput) {
+      setDetectedMinDate(detectionResult.overallEarliestDateInput);
+      setDetectedMaxDate(detectionResult.overallLatestDateInput);
+    }
+
+    let fp = currentFingerprint;
+    if (!fp) {
+      const fileInputs: { role: "log" | "assets" | "ipLocation"; content: string }[] = [];
+      if (cfg.logCsv) fileInputs.push({ role: "log", content: await readFileAsText(cfg.logCsv) });
+      if (cfg.assetsCsv) fileInputs.push({ role: "assets", content: await readFileAsText(cfg.assetsCsv) });
+      if (cfg.ipLocationCsv) fileInputs.push({ role: "ipLocation", content: await readFileAsText(cfg.ipLocationCsv) });
+      fp = await computeDatasetFingerprint(fileInputs);
+      setCurrentFingerprint(fp);
+    }
+
+    if (fp) {
+      saveConfirmedBaseline(fp, {
+        trainingStart: applied.start,
+        trainingEnd: applied.end,
+        timezone: cfg.timezone,
+        detectedMinIso: detectionResult?.overallEarliestIso,
+        detectedMaxIso: detectionResult?.overallLatestIso,
+      });
+      setStatusNotice({
+        type: "saved_success",
+        message: `Applied detected baseline range (${applied.start} to ${applied.end}) and saved for this dataset.`,
+      });
+    }
+  }
+
+  async function handleSaveManualDates() {
+    if (!cfg.trainingStart || !cfg.trainingEnd) {
+      setError("Please enter both Baseline Start and End dates before confirming.");
+      return;
+    }
+    if (cfg.trainingStart > cfg.trainingEnd) {
+      setError("Baseline Start date cannot be later than Baseline End date.");
+      return;
+    }
+    let fp = currentFingerprint;
+    if (!fp) {
+      const fileInputs: { role: "log" | "assets" | "ipLocation"; content: string }[] = [];
+      if (cfg.logCsv) fileInputs.push({ role: "log", content: await readFileAsText(cfg.logCsv) });
+      if (cfg.assetsCsv) fileInputs.push({ role: "assets", content: await readFileAsText(cfg.assetsCsv) });
+      if (cfg.ipLocationCsv) fileInputs.push({ role: "ipLocation", content: await readFileAsText(cfg.ipLocationCsv) });
+      fp = await computeDatasetFingerprint(fileInputs);
+      setCurrentFingerprint(fp);
+    }
+    if (fp) {
+      saveConfirmedBaseline(fp, {
+        trainingStart: cfg.trainingStart,
+        trainingEnd: cfg.trainingEnd,
+        timezone: cfg.timezone,
+        detectedMinIso: detectionResult?.overallEarliestIso,
+        detectedMaxIso: detectionResult?.overallLatestIso,
+      });
+      setStatusNotice({
+        type: "saved_success",
+        message: `Saved confirmed baseline window (${cfg.trainingStart} to ${cfg.trainingEnd}) for this dataset.`,
+      });
+    }
+  }
+
   async function handleAnalyze() {
     if (!cfg.logCsv) return;
+
+    if (!cfg.trainingStart || !cfg.trainingEnd) {
+      setError(
+        "Both Baseline Start and Baseline End dates are required before running analysis. Please detect or enter a baseline calibration window."
+      );
+      return;
+    }
+
+    if (cfg.trainingStart > cfg.trainingEnd) {
+      setError("Baseline Start date cannot be later than Baseline End date.");
+      return;
+    }
+
     setError(null);
     setLoading(true);
 
@@ -293,7 +577,7 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
       const assetsCsvText = cfg.assetsCsv ? await readFileAsText(cfg.assetsCsv) : undefined;
       const ipLocCsvText = cfg.ipLocationCsv ? await readFileAsText(cfg.ipLocationCsv) : undefined;
 
-      const config = buildConfig(cfg);
+      const config = buildConfig(cfg, columnOverrides);
       const { analyzeFile } = await import("@/lib/getResult");
       const result = await analyzeFile(logCsvText, assetsCsvText, ipLocCsvText, config);
 
@@ -405,6 +689,29 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
                   onChange={(f) => set("logCsv", f)}
                 />
 
+                {cfg.logCsv && (
+                  <div className="flex items-center justify-between px-3.5 py-2.5 rounded-lg bg-slate-950/70 border border-slate-800 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Sliders className="h-4 w-4 text-cyan-400" />
+                      <span className="text-slate-300 font-medium">Universal CSV Schema Mapping</span>
+                      {Object.keys(columnOverrides).length > 0 && (
+                        <Badge className="bg-purple-950 text-purple-300 border-purple-800 text-[10px]">
+                          {Object.keys(columnOverrides).length} overrides active
+                        </Badge>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSchemaModalOpen(true)}
+                      className="h-7 text-xs border-cyan-800/60 text-cyan-300 hover:bg-cyan-950/40"
+                    >
+                      Review & Correct Mappings
+                    </Button>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-1">
                   <FileDropZone
                     id="assets-csv"
@@ -458,16 +765,64 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
           {/* Right Column: Baseline Calibration & Environment (5 cols) */}
           <div className="lg:col-span-5 space-y-5">
             <Card className="border-slate-800/80 bg-slate-900/60 shadow-xl">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2 text-white">
-                  <Clock className="h-4 w-4 text-cyan-400" />
-                  Baseline Calibration Window
-                </CardTitle>
-                <CardDescription>
-                  Define standard operating period and timestamp timezone context
-                </CardDescription>
+              <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
+                <div>
+                  <CardTitle className="text-sm font-semibold flex items-center gap-2 text-white">
+                    <Clock className="h-4 w-4 text-cyan-400" />
+                    Baseline Calibration Window
+                  </CardTitle>
+                  <CardDescription className="mt-0.5">
+                    Define standard operating period and timestamp timezone context
+                  </CardDescription>
+                </div>
+
+                <Button
+                  type="button"
+                  id="detect-date-range-btn"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    loading ||
+                    detectingRange ||
+                    (!cfg.logCsv && !cfg.assetsCsv && !cfg.ipLocationCsv)
+                  }
+                  onClick={handleDetectDateRange}
+                  className="shrink-0 border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 hover:border-cyan-400 font-semibold gap-1.5 shadow-[0_0_15px_rgba(6,182,212,0.15)]"
+                >
+                  {detectingRange ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+                      Detecting...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
+                      Detect Date Range
+                    </>
+                  )}
+                </Button>
               </CardHeader>
               <CardContent className="space-y-4">
+                {statusNotice && (
+                  <div
+                    id="baseline-status-notice"
+                    className="flex items-start justify-between rounded-lg border border-cyan-500/30 bg-cyan-950/30 px-3 py-2 text-xs text-cyan-200"
+                  >
+                    <div className="flex items-start gap-2">
+                      <Info className="h-4 w-4 text-cyan-400 shrink-0 mt-0.5" />
+                      <span>{statusNotice.message}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStatusNotice(null)}
+                      className="text-slate-400 hover:text-white p-0.5 ml-2"
+                      title="Dismiss notice"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
@@ -478,7 +833,10 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
                       type="date"
                       value={cfg.trainingStart}
                       disabled={loading}
-                      onChange={(e) => set("trainingStart", e.target.value)}
+                      onChange={(e) => {
+                        set("trainingStart", e.target.value);
+                        setDatesSource("manual");
+                      }}
                     />
                   </div>
 
@@ -491,9 +849,60 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
                       type="date"
                       value={cfg.trainingEnd}
                       disabled={loading}
-                      onChange={(e) => set("trainingEnd", e.target.value)}
+                      onChange={(e) => {
+                        set("trainingEnd", e.target.value);
+                        setDatesSource("manual");
+                      }}
                     />
                   </div>
+                </div>
+
+                {/* Validation Warnings */}
+                {cfg.trainingStart && cfg.trainingEnd && cfg.trainingStart > cfg.trainingEnd && (
+                  <div
+                    id="date-order-warning"
+                    className="rounded-lg border border-amber-500/40 bg-amber-950/30 p-2.5 text-xs text-amber-200 flex items-start gap-2"
+                  >
+                    <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Date Validation Warning:</strong> Baseline Start date ({cfg.trainingStart}) cannot be later than Baseline End date ({cfg.trainingEnd}).
+                    </span>
+                  </div>
+                )}
+
+                {detectedMinDate &&
+                  detectedMaxDate &&
+                  ((cfg.trainingStart && cfg.trainingStart < detectedMinDate) ||
+                    (cfg.trainingEnd && cfg.trainingEnd > detectedMaxDate)) && (
+                    <div
+                      id="date-outside-range-warning"
+                      className="rounded-lg border border-amber-500/40 bg-amber-950/30 p-2.5 text-xs text-amber-200 flex items-start gap-2"
+                    >
+                      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Range Warning:</strong> Manually entered baseline window ({cfg.trainingStart} to {cfg.trainingEnd}) falls outside the detected telemetry date range ({detectedMinDate} to {detectedMaxDate}).
+                      </span>
+                    </div>
+                  )}
+
+                <div className="flex items-center justify-between pt-0.5">
+                  <p className="text-[11px] text-slate-400">
+                    {!cfg.trainingStart && !cfg.trainingEnd
+                      ? "Dates are blank by default. Click 'Detect Date Range' or enter manually."
+                      : "Window used to learn user normal login distributions."}
+                  </p>
+                  {(cfg.trainingStart || cfg.trainingEnd) && (
+                    <Button
+                      type="button"
+                      id="save-baseline-btn"
+                      variant="ghost"
+                      size="xs"
+                      onClick={handleSaveManualDates}
+                      className="text-[11px] text-slate-400 hover:text-cyan-300"
+                    >
+                      Save Dates
+                    </Button>
+                  )}
                 </div>
 
                 <div className="space-y-1.5">
@@ -724,6 +1133,26 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
           </Button>
         </div>
       </div>
+
+      {/* Date Range Preview Dialog */}
+      <DateRangePreviewDialog
+        isOpen={previewDialogOpen}
+        result={detectionResult}
+        currentTimezone={cfg.timezone}
+        currentDates={{ start: cfg.trainingStart, end: cfg.trainingEnd }}
+        onApply={handleApplyDetectedRange}
+        onCancel={() => setPreviewDialogOpen(false)}
+      />
+
+      {/* Schema Mapping Dialog */}
+      <SchemaMappingDialog
+        open={schemaModalOpen}
+        onOpenChange={setSchemaModalOpen}
+        file={cfg.logCsv}
+        currentOverrides={columnOverrides}
+        onSaveOverrides={setColumnOverrides}
+        timezone={cfg.timezone}
+      />
 
       {/* Footer Branding */}
       <footer className="relative z-10 py-4 text-center text-xs text-slate-600 border-t border-slate-800/40">

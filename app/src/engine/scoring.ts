@@ -3,7 +3,8 @@
  * Owner: Person A — No network access. No browser APIs.
  *
  * Scoring rubric (max 100):
- *   15 pts per distinct rule fired, capped at 60
+ *   15 pts per distinct deterministic rule fired, capped at 60
+ *   +10 pts if statistical anomaly findings are present (non-duplicative)
  *   +15 if user is in config.privilegedAccounts
  *   +15 if any alert's host is marked privileged: true in assets
  *   +10 if ≥ 3 distinct rules fired
@@ -47,6 +48,38 @@ const TRIAGE_STEPS: Record<string, string[]> = {
     "Isolate the account and initiate a credential rotation.",
     "Perform forensic triage on all newly accessed hosts.",
   ],
+  "RULE-UNFAMILIAR-HOST": [
+    "Verify whether access to this specific host was authorized for the account.",
+    "Inspect security logs and process creation events on the newly accessed host.",
+    "Check if credentials were recovered or cached on the origin machine.",
+  ],
+  "RULE-UNKNOWN-ACCOUNT": [
+    "Examine source IP for broader scanning or password spraying against non-existent accounts.",
+    "Verify if decommissioned or misspelled legacy accounts are being accessed.",
+    "Inspect perimeter firewall and VPN gateway access logs for reconnaissance.",
+  ],
+  "RULE-IMPOSSIBLE-TRAVEL": [
+    "Contact the user immediately to verify their physical whereabouts during the login window.",
+    "Check if corporate VPN, cloud proxy, or satellite network caused apparent geographic relocation.",
+    "Invalidate active session tokens and enforce credentials reset if physical presence is disputed.",
+  ],
+  "RULE-ATTACK-SEQUENCE": [
+    "Investigate multi-stage sequence: failures -> credential compromise -> host lateral movement.",
+    "Immediately isolate the user account and revoke active authentication tickets.",
+    "Conduct endpoint incident response on all hosts accessed in the sequence.",
+  ],
+  "ANOMALY-FAILED-LOGINS": [
+    "Review authentication error codes for the flagged account (e.g. bad password vs expired).",
+    "Check for misconfigured local scripts or background services authenticating with stale credentials.",
+  ],
+  "ANOMALY-DISTINCT-HOSTS": [
+    "Audit list of destination systems accessed against the employee's role and business justification.",
+    "Check for automated administrative tool activity (PowerShell, WMI, PsExec).",
+  ],
+  "ANOMALY-SOURCE-IP-FAILURES": [
+    "Investigate source IP address reputation and internal vs external network placement.",
+    "Identify whether source IP belongs to shared infrastructure, NAT gateway, or proxy.",
+  ],
 };
 
 const DEFAULT_TRIAGE = [
@@ -72,14 +105,33 @@ export function scoreIncident(
   config: Config,
 ): Incident {
   const username = alerts[0].username;
-  const distinctRules = new Set(alerts.map((a) => a.ruleId));
+
+  // Separate deterministic rules from statistical anomalies
+  const ruleAlerts = alerts.filter((a) => a.kind !== "anomaly");
+  const anomalyAlerts = alerts.filter((a) => a.kind === "anomaly");
+
+  const distinctRules = new Set(ruleAlerts.map((a) => a.ruleId));
+  const distinctAnomalies = new Set(anomalyAlerts.map((a) => a.ruleId));
 
   const breakdown: ScoreBreakdownEntry[] = [];
 
   // 15 pts per distinct rule, capped at 60
   const rulePoints = Math.min(distinctRules.size * 15, 60);
   if (rulePoints > 0) {
-    breakdown.push({ label: `${distinctRules.size} distinct rule(s) fired (15 pts each, max 60)`, points: rulePoints });
+    breakdown.push({
+      label: `${distinctRules.size} distinct rule(s) fired (15 pts each, max 60)`,
+      points: rulePoints,
+    });
+  }
+
+  // Statistical anomaly bonus (up to 15 pts if anomalies fired without inflating score)
+  let anomalyPoints = 0;
+  if (distinctAnomalies.size > 0) {
+    anomalyPoints = Math.min(distinctAnomalies.size * 10, 15);
+    breakdown.push({
+      label: `${distinctAnomalies.size} statistical anomaly method(s) triggered (+${anomalyPoints} pts)`,
+      points: anomalyPoints,
+    });
   }
 
   // +15 if privileged user
@@ -91,16 +143,10 @@ export function scoreIncident(
 
   // +15 if any alert's host is privileged
   let privilegedHostBonus = 0;
-  const alertHosts = alerts.flatMap((a) => a.evidenceIds.length > 0 ? [a] : []).map((a) => a.details?.["host"] as string | undefined);
-  // Also extract hosts from alert details if available, or check hosts mentioned in evidence
-  const privilegedHostSet = new Set(config.assets.filter((a) => a.privileged).map((a) => a.host));
-
-  // Check if any alert's details or explanation references a privileged host
   const anyPrivilegedHost = config.assets
     .filter((a) => a.privileged)
     .some((asset) =>
       alerts.some((alert) => {
-        // Check details.newHosts, alert explanation, or alert details.sourceIp/host
         const details = alert.details;
         if (typeof details?.["host"] === "string" && details["host"] === asset.host) return true;
         const newHosts = details?.["newHosts"] as string[] | undefined;
@@ -122,15 +168,16 @@ export function scoreIncident(
     breakdown.push({ label: "≥ 3 distinct rules fired", points: 10 });
   }
 
-  const rawScore = rulePoints + privilegedUserBonus + privilegedHostBonus + multiRuleBonus;
+  const rawScore = rulePoints + anomalyPoints + privilegedUserBonus + privilegedHostBonus + multiRuleBonus;
   const score    = Math.min(rawScore, 100);
   const severity = scoreToSeverity(score);
 
-  // Build triage steps from fired rules
+  // Build triage steps from fired rules and anomalies
+  const allFindingIds = new Set([...distinctRules, ...distinctAnomalies]);
   const triageSteps: string[] = [];
   const seenSteps = new Set<string>();
-  for (const ruleId of distinctRules) {
-    const steps = TRIAGE_STEPS[ruleId] ?? DEFAULT_TRIAGE;
+  for (const findingId of allFindingIds) {
+    const steps = TRIAGE_STEPS[findingId] ?? DEFAULT_TRIAGE;
     for (const step of steps) {
       if (!seenSteps.has(step)) {
         seenSteps.add(step);
@@ -142,10 +189,42 @@ export function scoreIncident(
 
   // Build explanation — NEVER say "confirmed compromise"
   const ruleList = [...distinctRules].join(", ");
-  const explanation = `Suspicious indications observed for user "${username}": rules ${ruleList} fired. Score ${score}/100 (${severity}).`;
+  const anomalyList = [...distinctAnomalies].join(", ");
+  let explanation = `Suspicious indications observed for user "${username}": `;
+  if (distinctRules.size > 0 && distinctAnomalies.size > 0) {
+    explanation += `rules [${ruleList}] and statistical anomalies [${anomalyList}]. Score ${score}/100 (${severity}).`;
+  } else if (distinctRules.size > 0) {
+    explanation += `rules [${ruleList}] fired. Score ${score}/100 (${severity}).`;
+  } else {
+    explanation += `statistical anomalies [${anomalyList}] detected. Score ${score}/100 (${severity}).`;
+  }
 
-  const timeStart = alerts.map((a) => a.timeStart).sort()[0];
-  const timeEnd   = alerts.map((a) => a.timeEnd).sort().at(-1)!;
+  // Collect affected hosts and IPs
+  const affectedIps = new Set<string>();
+  const affectedHosts = new Set<string>();
+
+  for (const a of alerts) {
+    const det = a.details;
+    if (det) {
+      if (typeof det["sourceIp"] === "string") affectedIps.add(det["sourceIp"]);
+      if (typeof det["currentIp"] === "string") affectedIps.add(det["currentIp"]);
+      if (typeof det["previousIp"] === "string") affectedIps.add(det["previousIp"]);
+      if (typeof det["host"] === "string") affectedHosts.add(det["host"]);
+      if (Array.isArray(det["newHosts"])) {
+        det["newHosts"].forEach((h: string) => affectedHosts.add(h));
+      }
+    }
+  }
+
+  const detectionTypes: ("rule" | "anomaly")[] = [];
+  if (ruleAlerts.length > 0) detectionTypes.push("rule");
+  if (anomalyAlerts.length > 0) detectionTypes.push("anomaly");
+
+  const correlationReason = `Alerts correlated for account "${username}" occurring in temporal proximity across ${alerts.length} finding(s).`;
+  const dataLimitations = [
+    "Analysis is strictly offline and based exclusively on provided CSV datasets.",
+    "Absence of threat-intel lookups means reputation scores reflect local observation only.",
+  ];
 
   return {
     id,
@@ -157,5 +236,11 @@ export function scoreIncident(
     scoreBreakdown: breakdown,
     triageSteps,
     disposition: "suspicious",
+    affectedIps: [...affectedIps],
+    affectedHosts: [...affectedHosts],
+    correlationReason,
+    dataLimitations,
+    detectionTypes,
   };
 }
+
