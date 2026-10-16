@@ -117,3 +117,47 @@ Errors are learning opportunities. When something breaks:
 You sit between human intent (directives) and deterministic execution (Python scripts). Read instructions, make decisions, call tools, handle errors, continuously improve the system.
 
 Be pragmatic. Be reliable. Self-anneal.
+
+---
+
+## Project Rules (missionathon — log-analysis app)
+
+These rules apply to all work in the `app/` sub-project (Next.js log-analysis tool).
+
+### (a) Engine purity
+All code under `src/engine/` and `src/data/` must be pure, deterministic TypeScript.
+- **No** network access (`fetch`, `XMLHttpRequest`, WebSockets, etc.).
+- **No** browser APIs (`window`, `document`, `localStorage`, etc.).
+- The full analysis pipeline (`analyze()`) runs entirely client-side in the browser after the file is loaded.
+
+### (b) Type immutability
+**Never edit `src/types.ts`** without an explicit instruction that says so. It is the shared contract between Person A (engine) and Person B (UI). Unilateral changes break the other owner's work.
+
+### (c) Baseline discipline
+Baselines (normal behaviour models) are learned **exclusively** from events whose timestamps fall within `config.trainingPeriod`. Events outside that window must not influence baseline calculations.
+
+### (d) Finding language
+All analyst-facing text must call detections **"suspicious indications"**.  
+The phrase "confirmed compromise" (or any equivalent — "confirmed attack", "definitive breach") is **banned** from all UI copy, explanation strings, and comments.
+
+### (e) File ownership
+| Owner    | Files / directories |
+|----------|---------------------|
+| Person A | `src/engine/`, `src/data/`, `tests/` |
+| Person B | `src/app/`, `src/components/` |
+
+**Do not edit files you do not own.** Cross-owner edits require explicit co-ordination and a note in the commit message.
+
+### (f) Verification before claiming done
+After every task:
+1. Run `npm test` — paste the real output.
+2. Run `npm run build` — paste the real output.
+3. **Never claim something works without having run both commands and shown their output.**
+Failing tests or build errors block the task from being marked complete.
+
+### (g) Commit cadence
+After each task is verified (tests pass, build succeeds), commit with a Conventional Commit message:
+```
+feat(app): <short description>
+```
+Include the `npm test` and `npm run build` exit codes in the commit body.
