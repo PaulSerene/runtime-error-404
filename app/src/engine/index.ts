@@ -14,7 +14,15 @@ import { passwordSpray }     from "@/engine/rules/passwordSpray";
 import { unusualHour }       from "@/engine/rules/unusualHour";
 import { newIpOrLocation }   from "@/engine/rules/newIpOrLocation";
 import { newHostAccess }     from "@/engine/rules/newHostAccess";
+import { checkRequiredFields, type RuleSkip } from "@/engine/rules/guards";
 import { groupIntoIncidents } from "@/engine/incidents";
+
+import { RULE_ID as RF_ID }  from "@/engine/rules/repeatedFailures";
+import { RULE_ID as BTS_ID } from "@/engine/rules/burstThenSuccess";
+import { RULE_ID as PS_ID }  from "@/engine/rules/passwordSpray";
+import { RULE_ID as UH_ID }  from "@/engine/rules/unusualHour";
+import { RULE_ID as NI_ID }  from "@/engine/rules/newIpOrLocation";
+import { RULE_ID as NH_ID }  from "@/engine/rules/newHostAccess";
 
 /**
  * Analyse a Windows Security-log CSV export.
@@ -40,7 +48,6 @@ export function analyze(
   const ipLoc = config.ipLocations ?? [];
   if (ipLocCsv) {
     const parsed = parseIpLocationCsv(ipLocCsv);
-    // Convert back to plain IpLocationEntry shape expected by rules
     ipLoc.push(...parsed.map((p) => ({ cidr: p.cidr, location: p.location })));
   }
 
@@ -50,24 +57,50 @@ export function analyze(
   // ── Baseline learning ─────────────────────────────────────────────────────
   const baselines = learnBaselines(events, config);
 
-  // ── Detection rules ───────────────────────────────────────────────────────
+  // ── Detection rules (with required-field guards) ──────────────────────────
   const ruleArgs = [events, baselines, config, ipLoc, assets] as const;
+  const skips: RuleSkip[] = [];
+
+  function runRule<T>(
+    ruleId: string,
+    fn: () => T[],
+  ): T[] {
+    const skip = checkRequiredFields(ruleId, events);
+    if (skip) {
+      skips.push(skip);
+      return [];
+    }
+    return fn();
+  }
 
   const allAlerts = [
-    ...repeatedFailures(...ruleArgs),
-    ...burstThenSuccess(...ruleArgs),
-    ...passwordSpray(...ruleArgs),
-    ...unusualHour(...ruleArgs),
-    ...newIpOrLocation(...ruleArgs),
-    ...newHostAccess(...ruleArgs),
+    ...runRule(RF_ID,  () => repeatedFailures(...ruleArgs)),
+    ...runRule(BTS_ID, () => burstThenSuccess(...ruleArgs)),
+    ...runRule(PS_ID,  () => passwordSpray(...ruleArgs)),
+    ...runRule(UH_ID,  () => unusualHour(...ruleArgs)),
+    ...runRule(NI_ID,  () => newIpOrLocation(...ruleArgs)),
+    ...runRule(NH_ID,  () => newHostAccess(...ruleArgs)),
   ];
 
   // ── Incident grouping + scoring ───────────────────────────────────────────
   const incidents = groupIntoIncidents(allAlerts, config);
 
+  // ── Surface skips in the ingest report ────────────────────────────────────
+  // Skips are recorded as InvalidRow-like entries so the UI's IngestPanel
+  // can display them without needing a new top-level field.
+  const skippedRuleRows = skips.map((s) => ({
+    row: s.ruleId,
+    reason: s.reason,
+  }));
+
   return {
     events,
-    ingestReport: report,
+    ingestReport: {
+      ...report,
+      // Append rule-skip notices after any genuine invalid rows
+      invalidRows: [...report.invalidRows, ...skippedRuleRows],
+    },
+    parseReport: report.parseReport,
     alerts: allAlerts,
     incidents,
     config,
