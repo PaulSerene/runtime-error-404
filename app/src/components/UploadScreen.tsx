@@ -280,15 +280,7 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
 
   const [datesSource, setDatesSource] = useState<
     "blank" | "manual" | "detected" | "restored_saved" | "restored_no_files"
-  >(() => {
-    if (typeof window !== "undefined") {
-      const last = getLastSavedBaseline();
-      if (last?.trainingStart && last?.trainingEnd) {
-        return "restored_no_files";
-      }
-    }
-    return "blank";
-  });
+  >("blank");
 
   const datesSourceRef = useRef(datesSource);
   useEffect(() => {
@@ -298,68 +290,51 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
   const [statusNotice, setStatusNotice] = useState<{
     type: "restored_no_files" | "restored_saved" | "saved_success";
     message: string;
-  } | null>(() => {
-    if (typeof window !== "undefined") {
-      const last = getLastSavedBaseline();
-      if (last?.trainingStart && last?.trainingEnd) {
-        return {
-          type: "restored_no_files",
-          message: `Notice: Baseline dates (${last.trainingStart} to ${last.trainingEnd}) were restored from your previous session without files uploaded and may not match files uploaded later.`,
-        };
-      }
-    }
-    return null;
+  } | null>(null);
+
+  const [detectedMinDate, setDetectedMinDate] = useState<string | null>(null);
+  const [detectedMaxDate, setDetectedMaxDate] = useState<string | null>(null);
+
+  const [cfg, setCfg] = useState<UploadConfig>({
+    logCsv: null,
+    assetsCsv: null,
+    ipLocationCsv: null,
+    trainingStart: "",
+    trainingEnd: "",
+    timezone: "UTC",
+    failureCount: 5,
+    failureWindowMinutes: 10,
+    burstFailures: 3,
+    burstWindowMinutes: 15,
+    sprayAccounts: 5,
+    sprayWindowMinutes: 10,
+    maintenanceWindows: [{ start: "2024-03-10T02:00", end: "2024-03-10T04:00" }],
+    approvedAccounts: "svc-backup, svc-monitor",
+    vpnCidrs: "10.100.0.0/16, 172.20.0.0/14",
   });
 
-  const [detectedMinDate, setDetectedMinDate] = useState<string | null>(() => {
-    if (typeof window !== "undefined") {
-      const last = getLastSavedBaseline();
-      if (last?.detectedMinIso) {
-        return formatIsoToDateInput(last.detectedMinIso, last.timezone || "UTC");
+  // Client-side hydration effect: restore saved baseline from previous session if present
+  useEffect(() => {
+    const last = getLastSavedBaseline();
+    if (last?.trainingStart && last?.trainingEnd) {
+      setDatesSource("restored_no_files");
+      setStatusNotice({
+        type: "restored_no_files",
+        message: `Notice: Baseline dates (${last.trainingStart} to ${last.trainingEnd}) were restored from your previous session without files uploaded and may not match files uploaded later.`,
+      });
+      if (last.detectedMinIso) {
+        setDetectedMinDate(formatIsoToDateInput(last.detectedMinIso, last.timezone || "UTC"));
       }
-    }
-    return null;
-  });
-
-  const [detectedMaxDate, setDetectedMaxDate] = useState<string | null>(() => {
-    if (typeof window !== "undefined") {
-      const last = getLastSavedBaseline();
-      if (last?.detectedMaxIso) {
-        return formatIsoToDateInput(last.detectedMaxIso, last.timezone || "UTC");
+      if (last.detectedMaxIso) {
+        setDetectedMaxDate(formatIsoToDateInput(last.detectedMaxIso, last.timezone || "UTC"));
       }
+      setCfg((prev) => ({
+        ...prev,
+        trainingStart: prev.trainingStart || last.trainingStart,
+        trainingEnd: prev.trainingEnd || last.trainingEnd,
+      }));
     }
-    return null;
-  });
-
-  const [cfg, setCfg] = useState<UploadConfig>(() => {
-    let initialStart = "";
-    let initialEnd = "";
-    if (typeof window !== "undefined") {
-      const last = getLastSavedBaseline();
-      if (last?.trainingStart && last?.trainingEnd) {
-        initialStart = last.trainingStart;
-        initialEnd = last.trainingEnd;
-      }
-    }
-
-    return {
-      logCsv: null,
-      assetsCsv: null,
-      ipLocationCsv: null,
-      trainingStart: initialStart,
-      trainingEnd: initialEnd,
-      timezone: "UTC",
-      failureCount: 5,
-      failureWindowMinutes: 10,
-      burstFailures: 3,
-      burstWindowMinutes: 15,
-      sprayAccounts: 5,
-      sprayWindowMinutes: 10,
-      maintenanceWindows: [{ start: "2024-03-10T02:00", end: "2024-03-10T04:00" }],
-      approvedAccounts: "svc-backup, svc-monitor",
-      vpnCidrs: "10.100.0.0/16, 172.20.0.0/14",
-    };
-  });
+  }, []);
 
   const set = <K extends keyof UploadConfig>(k: K, v: UploadConfig[K]) =>
     setCfg((c) => ({ ...c, [k]: v }));
