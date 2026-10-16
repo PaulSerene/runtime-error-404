@@ -15,8 +15,8 @@ export interface LogEvent {
   host: string;
   eventType: string;
   result: string;
-  /** Windows logon type code as a string, e.g. "3". */
-  logonType: string;
+  /** Windows logon type code as a string, e.g. "3", or null if missing. */
+  logonType: string | null;
   /** Original CSV row exactly as parsed. */
   rawRow: string;
   /** Analyst flags attached during analysis, e.g. ["off-hours", "privileged"]. */
@@ -77,12 +77,22 @@ export interface InvalidRow {
   reason: string;
 }
 
+export interface ParseReport {
+  totalRows: number;
+  validRows: number;
+  rejectedCount: number;
+  rejectedByReason: Record<string, number>;
+  invalidRows: InvalidRow[];
+}
+
 export interface IngestReport {
   totalRows: number;
   validRows: number;
   invalidRows: InvalidRow[];
   duplicatesRemoved: number;
   missingFieldCounts: Record<string, number>;
+  rejectedByReason?: Record<string, number>;
+  parseReport?: ParseReport;
 }
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -125,6 +135,7 @@ export interface Config {
 export interface AnalysisResult {
   events: LogEvent[];
   ingestReport: IngestReport;
+  parseReport?: ParseReport;
   alerts: Alert[];
   incidents: Incident[];
   config: Config;

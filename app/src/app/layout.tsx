@@ -13,10 +13,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Log Analysis Engine — Security Incident Dashboard",
+  title: "VANGUARD SOC — Context-Aware Threat Detection & Log Analysis",
   description:
     "Upload Windows Security Event Log CSVs and get AI-powered incident detection, severity scoring, and triage guidance.",
-  keywords: ["SIEM", "log analysis", "security incidents", "threat detection"],
+  keywords: ["SIEM", "log analysis", "security incidents", "threat detection", "VANGUARD"],
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

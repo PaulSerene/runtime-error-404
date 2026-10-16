@@ -1,6 +1,6 @@
 "use client";
 
-import { cn } from "cn";
+import { cn } from "@/lib/utils";
 import { useState, useRef } from "react";
 import type { AnalysisResult, Config } from "@/types";
 import {
@@ -18,7 +18,24 @@ import {
   X,
   Loader2,
   AlertCircle,
+  Shield,
+  ShieldAlert,
+  Sliders,
+  CheckCircle2,
+  Radio,
+  Cpu,
+  Sparkles,
+  Calendar,
+  Globe,
+  Clock,
+  KeyRound,
+  Network,
 } from "lucide-react";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
 
 // ─── Local form state ────────────────────────────────────────────────────────
 interface UploadConfig {
@@ -28,16 +45,19 @@ interface UploadConfig {
   trainingStart: string;
   trainingEnd: string;
   timezone: string;
-  failedLogonsPerHour: number;
-  distinctHostsPerHour: number;
-  offHoursLogonRisk: number;
-  lateralMovementHopCount: number;
+  failureCount: number;
+  failureWindowMinutes: number;
+  burstFailures: number;
+  burstWindowMinutes: number;
+  sprayAccounts: number;
+  sprayWindowMinutes: number;
   maintenanceWindows: { start: string; end: string }[];
   approvedAccounts: string;
   vpnCidrs: string;
 }
 
 const TIMEZONES = [
+  "UTC",
   "America/New_York",
   "America/Chicago",
   "America/Denver",
@@ -49,10 +69,9 @@ const TIMEZONES = [
   "Asia/Singapore",
   "Asia/Kolkata",
   "Australia/Sydney",
-  "UTC",
 ];
 
-// ─── File drop zone ───────────────────────────────────────────────────────────
+// ─── Modern Cyber File Drop Zone ─────────────────────────────────────────────
 function FileDropZone({
   id,
   label,
@@ -61,6 +80,7 @@ function FileDropZone({
   file,
   required,
   disabled,
+  accent = "cyan",
   onChange,
 }: {
   id: string;
@@ -70,30 +90,43 @@ function FileDropZone({
   file: File | null;
   required?: boolean;
   disabled?: boolean;
+  accent?: "cyan" | "emerald" | "amber";
   onChange: (f: File | null) => void;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   return (
-    <div>
-      <label className="mb-1.5 block text-xs font-semibold text-slate-300">
-        {label}
-        {required && <span className="ml-1 text-red-400">*</span>}
-        {!required && <span className="ml-1 text-slate-500">(optional)</span>}
-      </label>
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-semibold tracking-wide text-slate-200 flex items-center gap-1.5">
+          <Icon className="h-3.5 w-3.5 text-cyan-400" />
+          {label}
+          {required ? (
+            <span className="text-red-400 font-bold">*</span>
+          ) : (
+            <span className="text-[10px] text-slate-500 font-normal uppercase tracking-wider">(Optional)</span>
+          )}
+        </label>
+        {file && (
+          <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
+            <CheckCircle2 className="h-3 w-3" /> Ready ({(file.size / 1024).toFixed(1)} KB)
+          </span>
+        )}
+      </div>
+
       <div
         role="button"
         tabIndex={disabled ? -1 : 0}
         id={id}
         className={cn(
-          "relative flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition-all duration-200",
+          "relative flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed p-5 text-center transition-all duration-300 backdrop-blur-sm group select-none",
           disabled && "pointer-events-none opacity-50",
           dragging
-            ? "border-blue-400/60 bg-blue-500/10"
+            ? "border-cyan-400 bg-cyan-950/40 shadow-[0_0_20px_rgba(6,182,212,0.25)] scale-[1.01]"
             : file
-            ? "border-emerald-500/40 bg-emerald-500/5"
-            : "border-slate-700/60 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50"
+            ? "border-emerald-500/40 bg-emerald-950/20 shadow-[0_0_15px_rgba(16,185,129,0.1)] hover:border-emerald-400/60"
+            : "border-slate-800 bg-slate-900/40 hover:border-cyan-500/40 hover:bg-slate-900/70 hover:shadow-[0_0_15px_rgba(6,182,212,0.1)]"
         )}
         onClick={() => !disabled && ref.current?.click()}
         onKeyDown={(e) => !disabled && e.key === "Enter" && ref.current?.click()}
@@ -115,27 +148,48 @@ function FileDropZone({
           disabled={disabled}
           onChange={(e) => onChange(e.target.files?.[0] ?? null)}
         />
+
         {file ? (
-          <>
-            <FileText className="mb-2 h-7 w-7 text-emerald-400" />
-            <p className="text-sm font-semibold text-emerald-300">{file.name}</p>
-            <p className="mt-0.5 text-[0.65rem] text-slate-400">
-              {(file.size / 1024).toFixed(1)} KB
-            </p>
+          <div className="flex w-full items-center justify-between gap-3 px-2">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                <FileText className="h-5 w-5" />
+              </div>
+              <div className="text-left truncate">
+                <p className="truncate text-xs font-semibold text-white group-hover:text-cyan-300 transition-colors">
+                  {file.name}
+                </p>
+                <p className="text-[10px] text-slate-400 font-mono">
+                  {(file.size / 1024).toFixed(1)} KB • CSV Document
+                </p>
+              </div>
+            </div>
+
             <button
               type="button"
-              onClick={(e) => { e.stopPropagation(); onChange(null); }}
-              className="mt-2 flex items-center gap-1 rounded-md px-2 py-0.5 text-[0.65rem] text-red-400 hover:bg-red-500/10 transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange(null);
+                if (ref.current) ref.current.value = "";
+              }}
+              className="rounded-md p-1.5 text-slate-400 hover:bg-red-500/20 hover:text-red-300 transition-colors"
+              title="Remove file"
             >
-              <X className="h-3 w-3" /> Remove
+              <X className="h-4 w-4" />
             </button>
-          </>
+          </div>
         ) : (
-          <>
-            <Icon className="mb-2 h-7 w-7 text-slate-500" />
-            <p className="text-sm font-medium text-slate-400">{hint}</p>
-            <p className="mt-1 text-[0.65rem] text-slate-600">Drag & drop or click to browse</p>
-          </>
+          <div className="flex flex-col items-center gap-2">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-800/80 border border-slate-700/60 text-slate-300 group-hover:scale-110 group-hover:border-cyan-500/50 group-hover:text-cyan-400 transition-all duration-300">
+              <Upload className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-xs font-medium text-slate-200">
+                Drop CSV file here, or <span className="text-cyan-400 font-semibold underline underline-offset-2">browse</span>
+              </p>
+              <p className="mt-0.5 text-[11px] text-slate-500">{hint}</p>
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -155,10 +209,12 @@ function readFileAsText(file: File): Promise<string> {
 function buildConfig(cfg: UploadConfig): Config {
   return {
     thresholds: {
-      failedLogonsPerHour: cfg.failedLogonsPerHour,
-      distinctHostsPerHour: cfg.distinctHostsPerHour,
-      offHoursLogonRisk: cfg.offHoursLogonRisk,
-      lateralMovementHopCount: cfg.lateralMovementHopCount,
+      failureCount: cfg.failureCount,
+      failureWindowMinutes: cfg.failureWindowMinutes,
+      burstFailures: cfg.burstFailures,
+      burstWindowMinutes: cfg.burstWindowMinutes,
+      sprayAccounts: cfg.sprayAccounts,
+      sprayWindowMinutes: cfg.sprayWindowMinutes,
     },
     trainingPeriod: {
       start: cfg.trainingStart ? `${cfg.trainingStart}T00:00:00Z` : "2024-02-01T00:00:00Z",
@@ -191,7 +247,7 @@ interface Props {
   onLoadSample: () => void;
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── Main Component ───────────────────────────────────────────────────────────
 export function UploadScreen({ onResult, onLoadSample }: Props) {
   const [showSettings, setShowSettings] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -203,11 +259,13 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
     ipLocationCsv: null,
     trainingStart: "2024-02-01",
     trainingEnd: "2024-02-29",
-    timezone: "America/New_York",
-    failedLogonsPerHour: 10,
-    distinctHostsPerHour: 5,
-    offHoursLogonRisk: 30,
-    lateralMovementHopCount: 3,
+    timezone: "UTC",
+    failureCount: 5,
+    failureWindowMinutes: 10,
+    burstFailures: 3,
+    burstWindowMinutes: 15,
+    sprayAccounts: 5,
+    sprayWindowMinutes: 10,
     maintenanceWindows: [{ start: "2024-03-10T02:00", end: "2024-03-10T04:00" }],
     approvedAccounts: "svc-backup, svc-monitor",
     vpnCidrs: "10.100.0.0/16, 172.20.0.0/14",
@@ -227,9 +285,7 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
     setLoading(true);
 
     try {
-      // 1. Read files as text
       const logCsvText = await readFileAsText(cfg.logCsv);
-
       if (!logCsvText.trim()) {
         throw new Error("The log CSV is empty — please upload a file with at least one row.");
       }
@@ -237,18 +293,14 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
       const assetsCsvText = cfg.assetsCsv ? await readFileAsText(cfg.assetsCsv) : undefined;
       const ipLocCsvText = cfg.ipLocationCsv ? await readFileAsText(cfg.ipLocationCsv) : undefined;
 
-      // 2. Build Config from form values
       const config = buildConfig(cfg);
-
-      // 3. Run the engine in a Web Worker (lazy import to avoid SSR issues)
       const { analyzeFile } = await import("@/lib/getResult");
       const result = await analyzeFile(logCsvText, assetsCsvText, ipLocCsvText, config);
 
-      // 4. Guard: no valid rows at all
       if (result.ingestReport.validRows === 0 && result.ingestReport.totalRows > 0) {
         throw new Error(
-          `No valid rows found in the log CSV (${result.ingestReport.totalRows} rows parsed, all invalid). ` +
-            "Check that the file has the expected columns: timestamp, username, sourceIp, host, eventType, result, logonType."
+          `No valid rows found in the log CSV (${result.ingestReport.totalRows} rows parsed, all rejected). ` +
+            "Please check that the file includes valid timestamp, username, host, or eventType columns."
         );
       }
 
@@ -261,163 +313,259 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
   }
 
   return (
-    <div className={cn("min-h-screen bg-slate-950 px-4 py-10", loading && "pointer-events-none")}>
-      {/* Loading overlay */}
+    <div className="relative min-h-screen bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(14,35,70,0.5),rgba(3,7,18,1))] text-slate-100 flex flex-col justify-between">
+      {/* Background cyber grid */}
+      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,#1e293b0a_1px,transparent_1px),linear-gradient(to_bottom,#1e293b0a_1px,transparent_1px)] bg-[size:4rem_4rem]" />
+
+      {/* Loading Overlay */}
       {loading && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/90 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-5 rounded-2xl border border-slate-700/50 bg-slate-900 px-12 py-10 shadow-2xl">
-            <Loader2 className="h-10 w-10 animate-spin text-blue-400" />
-            <p className="text-base font-semibold text-white">Analyzing logs…</p>
-            <p className="text-xs text-slate-400">Running engine in background thread</p>
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-md">
+          <div className="flex flex-col items-center gap-4 rounded-2xl border border-cyan-500/30 bg-slate-900/90 p-8 shadow-[0_0_50px_rgba(6,182,212,0.25)] text-center max-w-sm">
+            <div className="relative">
+              <div className="absolute -inset-2 rounded-full bg-cyan-500/20 blur-md animate-pulse" />
+              <Loader2 className="h-10 w-10 animate-spin text-cyan-400 relative z-10" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-base font-semibold text-white">Running SOC Detection Engine</h3>
+              <p className="text-xs text-slate-400">
+                Stream-parsing CSV, building baseline distributions, and applying correlation rules in Web Worker...
+              </p>
+            </div>
+            <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+              <div className="bg-gradient-to-r from-cyan-500 to-blue-500 h-full w-2/3 animate-[pulse_1.5s_ease-in-out_infinite]" />
+            </div>
           </div>
         </div>
       )}
 
-      <div className="mx-auto max-w-3xl">
-        {/* Header */}
-        <div className="mb-10 text-center">
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-blue-500/30 bg-blue-500/10 px-4 py-1.5 text-xs font-semibold text-blue-400">
-            <Database className="h-3.5 w-3.5" />
-            Log Analysis Engine
+      {/* Main Container */}
+      <div className="relative z-10 container mx-auto px-4 py-8 max-w-5xl">
+        {/* Top Header & Badges */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-8 border-b border-slate-800/80">
+          <div className="flex items-center gap-3.5">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-cyan-500/40 bg-cyan-950/40 text-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.25)]">
+              <ShieldAlert className="h-6 w-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                  VANGUARD <span className="text-cyan-400 font-mono text-sm px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/50">SOC DETECTOR</span>
+                </h1>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Client-Side Windows Security Log Ingestion & Advanced Threat Correlation
+              </p>
+            </div>
           </div>
-          <h1 className="text-4xl font-black tracking-tight text-white">
-            Upload &amp; Configure
-          </h1>
-          <p className="mt-3 text-sm text-slate-400">
-            Provide your CSV logs and settings, then run the analysis — or load sample data to explore the dashboard.
-          </p>
+
+          <div className="flex items-center gap-2.5">
+            <Badge variant="cyan" className="font-mono text-[11px] py-1">
+              <Radio className="h-3 w-3 text-cyan-400 animate-pulse" /> ENGINE ACTIVE
+            </Badge>
+            <Badge variant="secondary" className="font-mono text-[11px] py-1 border-slate-700">
+              <Cpu className="h-3 w-3 text-slate-400" /> ZERO-CLOUD PRIVACY
+            </Badge>
+          </div>
         </div>
 
-        {/* Error banner */}
+        {/* Error Notification */}
         {error && (
-          <div className="mb-6 flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-5 py-4">
-            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-400" />
-            <div>
-              <p className="text-sm font-semibold text-red-300">Analysis failed</p>
-              <p className="mt-1 text-xs leading-relaxed text-red-400">{error}</p>
+          <div className="mt-6 flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-950/30 p-4 text-red-200 shadow-[0_0_20px_rgba(239,68,68,0.15)]">
+            <AlertCircle className="h-5 w-5 shrink-0 text-red-400 mt-0.5" />
+            <div className="text-xs space-y-1">
+              <p className="font-semibold text-red-300">Ingestion Error</p>
+              <p className="text-red-200/90 leading-relaxed">{error}</p>
             </div>
-            <button
-              onClick={() => setError(null)}
-              className="ml-auto shrink-0 rounded-lg p-1 text-red-400/60 hover:text-red-300 transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
           </div>
         )}
 
-        {/* Sample data CTA */}
-        <div className="mb-6 flex flex-col items-center gap-3 sm:flex-row">
-          <button
-            id="load-sample-data-btn"
-            onClick={onLoadSample}
-            disabled={loading}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-blue-500/40 bg-blue-500/10 px-5 py-3 text-sm font-semibold text-blue-300 transition-all hover:bg-blue-500/20 hover:shadow-lg hover:shadow-blue-500/10 sm:w-auto disabled:opacity-50"
-          >
-            <Database className="h-4 w-4" />
-            Load Sample Data
-          </button>
-          <span className="text-xs text-slate-600">— or upload your own files below —</span>
-        </div>
+        {/* Center Grid: Telemetry Feeds vs Calibration */}
+        <div className="mt-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left Column: Data Feeds (7 cols) */}
+          <div className="lg:col-span-7 space-y-5">
+            <Card className="border-slate-800/80 bg-slate-900/60 shadow-xl">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold flex items-center gap-2 text-white">
+                  <Database className="h-4 w-4 text-cyan-400" />
+                  Telemetry Data Sources
+                </CardTitle>
+                <CardDescription>
+                  Upload your event logs and optional metadata mapping CSV exports
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <FileDropZone
+                  id="log-csv"
+                  label="Windows Security Event Log CSV"
+                  hint="Exported from Event Viewer (Event IDs 4624, 4625, 4634, 4648, etc.)"
+                  icon={Shield}
+                  file={cfg.logCsv}
+                  required
+                  disabled={loading}
+                  onChange={(f) => set("logCsv", f)}
+                />
 
-        {/* File uploads */}
-        <div className="mb-6 rounded-2xl border border-slate-700/50 bg-slate-900/70 p-6 backdrop-blur">
-          <h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-slate-300">
-            <Upload className="h-4 w-4 text-blue-400" /> Data Sources
-          </h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <FileDropZone
-              id="upload-log-csv"
-              label="Log CSV"
-              hint="Windows Security Event Log"
-              icon={FileText}
-              file={cfg.logCsv}
-              required
-              disabled={loading}
-              onChange={(f) => { set("logCsv", f); setError(null); }}
-            />
-            <FileDropZone
-              id="upload-assets-csv"
-              label="Assets CSV"
-              hint="Host inventory & roles"
-              icon={Monitor}
-              file={cfg.assetsCsv}
-              disabled={loading}
-              onChange={(f) => set("assetsCsv", f)}
-            />
-            <FileDropZone
-              id="upload-ip-csv"
-              label="IP Location CSV"
-              hint="CIDR → location map"
-              icon={MapPin}
-              file={cfg.ipLocationCsv}
-              disabled={loading}
-              onChange={(f) => set("ipLocationCsv", f)}
-            />
-          </div>
-        </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-1">
+                  <FileDropZone
+                    id="assets-csv"
+                    label="Host Assets Catalog"
+                    hint="CSV mapping host, role, privileged"
+                    icon={Monitor}
+                    file={cfg.assetsCsv}
+                    disabled={loading}
+                    onChange={(f) => set("assetsCsv", f)}
+                  />
 
-        {/* Training period + timezone */}
-        <div className="mb-6 rounded-2xl border border-slate-700/50 bg-slate-900/70 p-6 backdrop-blur">
-          <h2 className="mb-4 flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-slate-300">
-            <Settings className="h-4 w-4 text-blue-400" /> Training Period &amp; Timezone
-          </h2>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <div>
-              <label htmlFor="training-start" className="mb-1 block text-xs font-semibold text-slate-400">
-                Training Period Start
-              </label>
-              <input
-                id="training-start"
-                type="date"
-                value={cfg.trainingStart}
+                  <FileDropZone
+                    id="ip-location-csv"
+                    label="IP Geolocation CIDR"
+                    hint="CSV mapping CIDRs to locations"
+                    icon={MapPin}
+                    file={cfg.ipLocationCsv}
+                    disabled={loading}
+                    onChange={(f) => set("ipLocationCsv", f)}
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Quick Demo Pre-load Box */}
+            <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-r from-cyan-950/30 via-slate-900/40 to-slate-900/60 p-4.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-cyan-400" />
+                  <span className="text-xs font-semibold text-white">Explore with Pre-Loaded Attack Scenarios</span>
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Instant analysis of credential stuffing, password spray, lateral movement & off-hours brute force.
+                </p>
+              </div>
+
+              <Button
+                type="button"
+                id="load-sample-btn"
+                variant="outline"
+                size="sm"
+                onClick={onLoadSample}
                 disabled={loading}
-                onChange={(e) => set("trainingStart", e.target.value)}
-                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
-              />
-            </div>
-            <div>
-              <label htmlFor="training-end" className="mb-1 block text-xs font-semibold text-slate-400">
-                Training Period End
-              </label>
-              <input
-                id="training-end"
-                type="date"
-                value={cfg.trainingEnd}
-                disabled={loading}
-                onChange={(e) => set("trainingEnd", e.target.value)}
-                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
-              />
-            </div>
-            <div>
-              <label htmlFor="timezone-select" className="mb-1 block text-xs font-semibold text-slate-400">
-                Timezone
-              </label>
-              <select
-                id="timezone-select"
-                value={cfg.timezone}
-                disabled={loading}
-                onChange={(e) => set("timezone", e.target.value)}
-                className="h-9 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-3 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
+                className="shrink-0 border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 hover:border-cyan-400 transition-all font-semibold"
               >
-                {TIMEZONES.map((tz) => (
-                  <option key={tz} value={tz}>{tz}</option>
-                ))}
-              </select>
+                Load Sample Dataset
+              </Button>
             </div>
+          </div>
+
+          {/* Right Column: Baseline Calibration & Environment (5 cols) */}
+          <div className="lg:col-span-5 space-y-5">
+            <Card className="border-slate-800/80 bg-slate-900/60 shadow-xl">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold flex items-center gap-2 text-white">
+                  <Clock className="h-4 w-4 text-cyan-400" />
+                  Baseline Calibration Window
+                </CardTitle>
+                <CardDescription>
+                  Define standard operating period and timestamp timezone context
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                      <Calendar className="h-3 w-3 text-slate-400" /> Baseline Start
+                    </label>
+                    <Input
+                      id="training-start"
+                      type="date"
+                      value={cfg.trainingStart}
+                      disabled={loading}
+                      onChange={(e) => set("trainingStart", e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                      <Calendar className="h-3 w-3 text-slate-400" /> Baseline End
+                    </label>
+                    <Input
+                      id="training-end"
+                      type="date"
+                      value={cfg.trainingEnd}
+                      disabled={loading}
+                      onChange={(e) => set("trainingEnd", e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                    <Globe className="h-3 w-3 text-slate-400" /> Log Timezone Alignment
+                  </label>
+                  <select
+                    id="timezone-select"
+                    value={cfg.timezone}
+                    disabled={loading}
+                    onChange={(e) => set("timezone", e.target.value)}
+                    className="flex h-9 w-full rounded-lg border border-slate-700/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 shadow-inner focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+                  >
+                    {TIMEZONES.map((tz) => (
+                      <option key={tz} value={tz} className="bg-slate-900 text-slate-100">
+                        {tz}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <Separator className="my-2 bg-slate-800" />
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                    <KeyRound className="h-3 w-3 text-slate-400" /> Whitelisted Service Accounts
+                  </label>
+                  <Input
+                    id="approved-accounts"
+                    value={cfg.approvedAccounts}
+                    disabled={loading}
+                    onChange={(e) => set("approvedAccounts", e.target.value)}
+                    placeholder="e.g. svc-backup, svc-scan"
+                  />
+                  <p className="text-[10px] text-slate-500">Comma-separated; suppresses false alarms from known automation.</p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                    <Network className="h-3 w-3 text-slate-400" /> Authorized VPN CIDRs
+                  </label>
+                  <Input
+                    id="vpn-cidrs"
+                    value={cfg.vpnCidrs}
+                    disabled={loading}
+                    onChange={(e) => set("vpnCidrs", e.target.value)}
+                    placeholder="e.g. 10.100.0.0/16, 172.20.0.0/14"
+                  />
+                  <p className="text-[10px] text-slate-500">Corporate remote access ranges excluded from geo-anomaly alerts.</p>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
 
-        {/* Advanced settings collapsible */}
-        <div className="mb-8 rounded-2xl border border-slate-700/50 bg-slate-900/70 backdrop-blur overflow-hidden">
+        {/* Collapsible Advanced Thresholds & Maintenance Windows */}
+        <div className="mt-6">
           <button
-            id="toggle-settings-panel"
+            type="button"
+            id="toggle-settings-btn"
             onClick={() => setShowSettings((v) => !v)}
-            disabled={loading}
-            className="flex w-full items-center justify-between px-6 py-4 text-left hover:bg-slate-800/30 transition-colors disabled:opacity-50"
+            className="flex w-full items-center justify-between rounded-xl border border-slate-800 bg-slate-900/50 px-5 py-3 text-left transition-all hover:border-slate-700 hover:bg-slate-900/80"
           >
-            <h2 className="flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-slate-300">
-              <Settings className="h-4 w-4 text-blue-400" /> Advanced Settings
-            </h2>
+            <div className="flex items-center gap-2.5">
+              <Sliders className="h-4 w-4 text-cyan-400" />
+              <div>
+                <span className="text-xs font-semibold text-white">Detection Rules Thresholds & Maintenance Windows</span>
+                <span className="ml-2 text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/40">
+                  TUNABLE PARAMETERS
+                </span>
+              </div>
+            </div>
             {showSettings ? (
               <ChevronUp className="h-4 w-4 text-slate-400" />
             ) : (
@@ -426,156 +574,161 @@ export function UploadScreen({ onResult, onLoadSample }: Props) {
           </button>
 
           {showSettings && (
-            <div className="border-t border-slate-700/50 px-6 pb-6 pt-5">
-              {/* Thresholds */}
-              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Thresholds
-              </h3>
-              <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {(
-                  [
-                    { id: "thresh-failed", key: "failedLogonsPerHour" as const, label: "Failed Logons / hr" },
-                    { id: "thresh-hosts", key: "distinctHostsPerHour" as const, label: "Distinct Hosts / hr" },
-                    { id: "thresh-offhours", key: "offHoursLogonRisk" as const, label: "Off-hours Risk %" },
-                    { id: "thresh-hops", key: "lateralMovementHopCount" as const, label: "Lateral Hop Count" },
-                  ] as const
-                ).map(({ id, key, label }) => (
-                  <div key={key}>
-                    <label htmlFor={id} className="mb-1 block text-[0.65rem] font-semibold text-slate-400">
-                      {label}
-                    </label>
-                    <input
-                      id={id}
-                      type="number"
-                      min={1}
-                      value={cfg[key]}
-                      disabled={loading}
-                      onChange={(e) => set(key, parseInt(e.target.value) || 0)}
-                      className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
-                    />
-                  </div>
-                ))}
-              </div>
+            <Card className="mt-3 border-slate-800/80 bg-slate-900/60 shadow-xl">
+              <CardContent className="pt-5 space-y-6">
+                <div>
+                  <h4 className="text-xs font-semibold uppercase tracking-wider text-cyan-400 mb-3 flex items-center gap-1.5">
+                    <Sliders className="h-3.5 w-3.5" /> Core Detection Thresholds
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div className="space-y-1.5 rounded-lg border border-slate-800/60 bg-slate-950/40 p-3">
+                      <label className="text-xs font-medium text-slate-200">Brute Force Threshold</label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          min={1}
+                          max={50}
+                          value={cfg.failureCount}
+                          disabled={loading}
+                          onChange={(e) => set("failureCount", Number(e.target.value))}
+                        />
+                        <span className="text-[11px] text-slate-400 font-mono">failures</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500">In {cfg.failureWindowMinutes} min window per user</p>
+                    </div>
 
-              {/* Maintenance windows */}
-              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Maintenance Windows
-              </h3>
-              <div className="mb-5 flex flex-col gap-2">
-                {cfg.maintenanceWindows.map((w, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <input
-                      id={`maint-start-${i}`}
-                      type="datetime-local"
-                      value={w.start}
-                      disabled={loading}
-                      onChange={(e) => {
-                        const mw = [...cfg.maintenanceWindows];
-                        mw[i] = { ...mw[i], start: e.target.value };
-                        set("maintenanceWindows", mw);
-                      }}
-                      className="h-8 flex-1 rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
-                    />
-                    <span className="text-xs text-slate-500">→</span>
-                    <input
-                      id={`maint-end-${i}`}
-                      type="datetime-local"
-                      value={w.end}
-                      disabled={loading}
-                      onChange={(e) => {
-                        const mw = [...cfg.maintenanceWindows];
-                        mw[i] = { ...mw[i], end: e.target.value };
-                        set("maintenanceWindows", mw);
-                      }}
-                      className="h-8 flex-1 rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
-                    />
-                    <button
+                    <div className="space-y-1.5 rounded-lg border border-slate-800/60 bg-slate-950/40 p-3">
+                      <label className="text-xs font-medium text-slate-200">Burst-Then-Success</label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          min={1}
+                          max={20}
+                          value={cfg.burstFailures}
+                          disabled={loading}
+                          onChange={(e) => set("burstFailures", Number(e.target.value))}
+                        />
+                        <span className="text-[11px] text-slate-400 font-mono">fails prior</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500">Within {cfg.burstWindowMinutes} min before login</p>
+                    </div>
+
+                    <div className="space-y-1.5 rounded-lg border border-slate-800/60 bg-slate-950/40 p-3">
+                      <label className="text-xs font-medium text-slate-200">Password Spray Accounts</label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          min={2}
+                          max={50}
+                          value={cfg.sprayAccounts}
+                          disabled={loading}
+                          onChange={(e) => set("sprayAccounts", Number(e.target.value))}
+                        />
+                        <span className="text-[11px] text-slate-400 font-mono">accounts</span>
+                      </div>
+                      <p className="text-[10px] text-slate-500">Targeted from single IP in {cfg.sprayWindowMinutes}m</p>
+                    </div>
+                  </div>
+                </div>
+
+                <Separator className="bg-slate-800" />
+
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-cyan-400 flex items-center gap-1.5">
+                      <Clock className="h-3.5 w-3.5" /> Maintenance Suppression Windows
+                    </h4>
+                    <Button
                       type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={addMaint}
                       disabled={loading}
-                      onClick={() => delMaint(i)}
-                      className="rounded-lg p-1.5 text-red-400/60 hover:bg-red-500/10 hover:text-red-400 transition-colors disabled:opacity-50"
+                      className="border-slate-700 text-slate-300 hover:text-white"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                      <Plus className="h-3 w-3 mr-1" /> Add Window
+                    </Button>
                   </div>
-                ))}
-                <button
-                  id="add-maintenance-window"
-                  type="button"
-                  disabled={loading}
-                  onClick={addMaint}
-                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-slate-700/60 px-3 py-1.5 text-xs text-slate-500 hover:border-slate-600 hover:text-slate-300 transition-colors disabled:opacity-50"
-                >
-                  <Plus className="h-3.5 w-3.5" /> Add window
-                </button>
-              </div>
 
-              {/* Approved accounts + VPN CIDRs */}
-              <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div>
-                  <label htmlFor="approved-accounts" className="mb-1 block text-xs font-semibold text-slate-400">
-                    Approved Accounts{" "}
-                    <span className="font-normal text-slate-600">(comma-separated)</span>
-                  </label>
-                  <input
-                    id="approved-accounts"
-                    type="text"
-                    value={cfg.approvedAccounts}
-                    disabled={loading}
-                    onChange={(e) => set("approvedAccounts", e.target.value)}
-                    placeholder="svc-backup, svc-monitor"
-                    className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
-                  />
+                  <div className="space-y-2">
+                    {cfg.maintenanceWindows.map((w, idx) => (
+                      <div key={idx} className="flex items-center gap-2.5 rounded-lg border border-slate-800 bg-slate-950/40 p-2.5">
+                        <span className="text-xs font-mono text-slate-500 w-6">#{idx + 1}</span>
+                        <div className="grid grid-cols-2 gap-2 flex-1">
+                          <Input
+                            type="datetime-local"
+                            value={w.start}
+                            disabled={loading}
+                            onChange={(e) => {
+                              const updated = [...cfg.maintenanceWindows];
+                              updated[idx].start = e.target.value;
+                              set("maintenanceWindows", updated);
+                            }}
+                          />
+                          <Input
+                            type="datetime-local"
+                            value={w.end}
+                            disabled={loading}
+                            onChange={(e) => {
+                              const updated = [...cfg.maintenanceWindows];
+                              updated[idx].end = e.target.value;
+                              set("maintenanceWindows", updated);
+                            }}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={() => delMaint(idx)}
+                          disabled={loading}
+                          className="text-slate-400 hover:text-red-400 hover:bg-red-500/10"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div>
-                  <label htmlFor="vpn-cidrs" className="mb-1 block text-xs font-semibold text-slate-400">
-                    VPN CIDRs{" "}
-                    <span className="font-normal text-slate-600">(comma-separated)</span>
-                  </label>
-                  <input
-                    id="vpn-cidrs"
-                    type="text"
-                    value={cfg.vpnCidrs}
-                    disabled={loading}
-                    onChange={(e) => set("vpnCidrs", e.target.value)}
-                    placeholder="10.100.0.0/16, 172.20.0.0/14"
-                    className="h-8 w-full rounded-lg border border-slate-700/60 bg-slate-800/60 px-2.5 text-xs text-slate-200 placeholder:text-slate-600 focus:border-blue-500/60 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all disabled:opacity-50"
-                  />
-                </div>
-              </div>
-            </div>
+              </CardContent>
+            </Card>
           )}
         </div>
 
-        {/* CTA */}
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-          <p className="text-xs text-slate-500">
-            {cfg.logCsv ? (
-              <span className="text-emerald-400">✓ Log CSV ready — {(cfg.logCsv.size / 1024).toFixed(1)} KB</span>
-            ) : (
-              <span className="text-amber-400">⚠ Log CSV required to run analysis</span>
-            )}
-          </p>
-          <button
-            id="run-analysis-btn"
-            onClick={handleAnalyze}
+        {/* Primary Action Button Bar */}
+        <div className="mt-8 flex flex-col sm:flex-row items-center justify-end gap-3.5 pt-4">
+          <Button
+            type="button"
+            id="analyze-btn"
+            size="lg"
             disabled={!cfg.logCsv || loading}
+            onClick={handleAnalyze}
             className={cn(
-              "flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-bold transition-all duration-200",
-              cfg.logCsv && !loading
-                ? "bg-blue-600 text-white hover:bg-blue-500 hover:shadow-xl hover:shadow-blue-500/20"
-                : "cursor-not-allowed bg-slate-800 text-slate-600"
+              "w-full sm:w-auto min-w-[220px] font-semibold tracking-wide transition-all duration-300",
+              cfg.logCsv
+                ? "bg-gradient-to-r from-cyan-500 via-blue-600 to-cyan-600 hover:from-cyan-400 hover:to-blue-500 text-white shadow-[0_0_25px_rgba(6,182,212,0.4)] cursor-pointer"
+                : "bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed"
             )}
           >
             {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin text-cyan-300" />
+                Analyzing Telemetry...
+              </>
             ) : (
-              <Play className="h-4 w-4" />
+              <>
+                <Play className="mr-2 h-4 w-4 fill-current" />
+                Analyze Logs Now
+              </>
             )}
-            {loading ? "Analyzing…" : "Run Analysis"}
-          </button>
+          </Button>
         </div>
       </div>
+
+      {/* Footer Branding */}
+      <footer className="relative z-10 py-4 text-center text-xs text-slate-600 border-t border-slate-800/40">
+        VANGUARD Cyber Telemetry SOC • Next.js 16 • Turbopack • Web Worker Execution
+      </footer>
     </div>
   );
 }

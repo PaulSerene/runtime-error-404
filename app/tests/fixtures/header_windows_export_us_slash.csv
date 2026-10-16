@@ -1,0 +1,8 @@
+TimeCreated,TargetUserName,IpAddress,WorkstationName,EventId,Keywords,LogonType
+03/15/2024 10:00:00 AM,victim_user,198.51.100.50,DC01,4625,Audit Failure,3
+03/15/2024 10:01:00 AM,victim_user,198.51.100.50,DC01,4625,Audit Failure,3
+03/15/2024 10:02:00 AM,victim_user,198.51.100.50,DC01,4625,Audit Failure,3
+03/15/2024 10:03:00 AM,victim_user,198.51.100.50,DC01,4625,Audit Failure,3
+03/15/2024 10:04:00 AM,victim_user,198.51.100.50,DC01,4625,Audit Failure,3
+03/15/2024 10:05:00 AM,victim_user,198.51.100.50,DC01,4625,Audit Failure,3
+03/15/2024 10:06:00 AM,victim_user,198.51.100.50,DC01,4624,Audit Success,3

@@ -14,6 +14,7 @@ import {
   ipInCidr,
   lookupLocation,
   parseCidr,
+  normalizeResult,
 } from "@/engine/ingest";
 import type { Config } from "@/types";
 
@@ -276,3 +277,78 @@ describe("parseIpLocationCsv", () => {
     expect(parseIpLocationCsv("")).toHaveLength(0);
   });
 });
+
+// ─── normalizeResult & logonType handling ───────────────────────────────────
+
+describe("normalizeResult", () => {
+  it("derives SUCCESS from eventType 4624 when result is missing", () => {
+    expect(normalizeResult("", "4624")).toBe("SUCCESS");
+    expect(normalizeResult(undefined, "4624")).toBe("SUCCESS");
+    expect(normalizeResult(null, "Microsoft-Windows-Security-Auditing: 4624")).toBe("SUCCESS");
+  });
+
+  it("derives FAILURE from eventType 4625 when result is missing", () => {
+    expect(normalizeResult("", "4625")).toBe("FAILURE");
+    expect(normalizeResult(undefined, "4625")).toBe("FAILURE");
+    expect(normalizeResult(null, "Event 4625")).toBe("FAILURE");
+  });
+
+  it("treats Audit Success/Failure as results", () => {
+    expect(normalizeResult("Audit Success")).toBe("SUCCESS");
+    expect(normalizeResult("Audit Failure")).toBe("FAILURE");
+    expect(normalizeResult("audit success")).toBe("SUCCESS");
+    expect(normalizeResult("audit failure")).toBe("FAILURE");
+  });
+
+  it("treats 0x0 and zero status codes as SUCCESS", () => {
+    expect(normalizeResult("0x0")).toBe("SUCCESS");
+    expect(normalizeResult("0x00000000")).toBe("SUCCESS");
+    expect(normalizeResult("0")).toBe("SUCCESS");
+    expect(normalizeResult("STATUS_SUCCESS")).toBe("SUCCESS");
+  });
+
+  it("treats non-zero status codes as FAILURE", () => {
+    expect(normalizeResult("0xC000006A")).toBe("FAILURE");
+    expect(normalizeResult("0xC000006D")).toBe("FAILURE");
+    expect(normalizeResult("0x1")).toBe("FAILURE");
+    expect(normalizeResult("STATUS_LOGON_FAILURE")).toBe("FAILURE");
+  });
+});
+
+describe("ingestCsv — result derivation and nullable logonType", () => {
+  it("derives result from eventType when result column is empty", () => {
+    const csv = `timestamp,username,sourceip,host,eventtype,result,logontype
+2024-03-15T10:00:00Z,alice,10.0.0.1,DC01,4624,,3
+2024-03-15T10:01:00Z,bob,10.0.0.2,DC01,4625,,3`;
+    const { events, report } = ingestCsv(csv, BASE_CONFIG);
+    expect(events).toHaveLength(2);
+    expect(report.validRows).toBe(2);
+    expect(events[0].result).toBe("SUCCESS");
+    expect(events[1].result).toBe("FAILURE");
+  });
+
+  it("normalises Audit Success / Failure and status codes in CSV", () => {
+    const csv = `timestamp,username,sourceip,host,eventtype,result,logontype
+2024-03-15T10:00:00Z,alice,10.0.0.1,DC01,4624,Audit Success,3
+2024-03-15T10:01:00Z,bob,10.0.0.2,DC01,4625,Audit Failure,3
+2024-03-15T10:02:00Z,carol,10.0.0.3,DC01,4624,0x0,3
+2024-03-15T10:03:00Z,dave,10.0.0.4,DC01,4625,0xC000006A,3`;
+    const { events } = ingestCsv(csv, BASE_CONFIG);
+    expect(events[0].result).toBe("SUCCESS");
+    expect(events[1].result).toBe("FAILURE");
+    expect(events[2].result).toBe("SUCCESS");
+    expect(events[3].result).toBe("FAILURE");
+  });
+
+  it("leaves logonType as null when missing without rejecting row", () => {
+    const csv = `timestamp,username,sourceip,host,eventtype,result,logontype
+2024-03-15T10:00:00Z,alice,10.0.0.1,DC01,4624,SUCCESS,`;
+    const { events, report } = ingestCsv(csv, BASE_CONFIG);
+    expect(events).toHaveLength(1);
+    expect(report.validRows).toBe(1);
+    expect(report.invalidRows).toHaveLength(0);
+    expect(events[0].logonType).toBeNull();
+    expect(report.missingFieldCounts["logonType"]).toBe(1);
+  });
+});
+

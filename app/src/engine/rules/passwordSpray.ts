@@ -37,9 +37,7 @@ export function passwordSpray(
   const alerts: Alert[] = [];
 
   for (const [sourceIp, evts] of byIp) {
-    evts.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-    // Sliding window
+    // Sliding window — evts already in timestamp order
     let i = 0;
     while (i < evts.length) {
       const windowStart = new Date(evts[i].timestamp).getTime();

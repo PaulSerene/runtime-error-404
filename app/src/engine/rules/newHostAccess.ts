@@ -43,9 +43,7 @@ export function newHostAccess(
     const newHostEvents = evts.filter((e) => !knownHosts.has(e.host));
     if (newHostEvents.length === 0) continue;
 
-    newHostEvents.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-    // Sliding window over new-host events
+    // Sliding window over new-host events — order already preserved
     let i = 0;
     while (i < newHostEvents.length) {
       const windowStart = new Date(newHostEvents[i].timestamp).getTime();

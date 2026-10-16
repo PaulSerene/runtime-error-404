@@ -6,6 +6,14 @@ timelines, and recommended triage steps.
 
 ---
 
+## Documentation
+
+| Document | Description |
+|---|---|
+| [docs/context-aware-detection.md](docs/context-aware-detection.md) | How maintenance windows, approved accounts, VPN CIDRs, and contextual scoring work — including false-positive handling, automated test results, and known limitations |
+
+---
+
 ## Setup
 
 ```bash

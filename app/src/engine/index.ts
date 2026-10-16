@@ -7,6 +7,7 @@
 
 import type { AnalysisResult, Config } from "@/types";
 import { ingestCsv, parseAssetsCsv, parseIpLocationCsv } from "@/engine/ingest";
+import { mergeDetectionDefaults } from "@/engine/config/detectionDefaults";
 import { learnBaselines } from "@/engine/baseline";
 import { repeatedFailures }  from "@/engine/rules/repeatedFailures";
 import { burstThenSuccess }  from "@/engine/rules/burstThenSuccess";
@@ -52,13 +53,19 @@ export function analyze(
   }
 
   // ── Ingest ────────────────────────────────────────────────────────────────
-  const { events, report } = ingestCsv(csvText, config);
+  // ── Merge detection.json defaults into thresholds (caller wins) ───────────
+  const mergedConfig: Config = {
+    ...config,
+    thresholds: mergeDetectionDefaults(config.thresholds),
+  };
+
+  const { events, report } = ingestCsv(csvText, mergedConfig);
 
   // ── Baseline learning ─────────────────────────────────────────────────────
-  const baselines = learnBaselines(events, config);
+  const baselines = learnBaselines(events, mergedConfig);
 
   // ── Detection rules (with required-field guards) ──────────────────────────
-  const ruleArgs = [events, baselines, config, ipLoc, assets] as const;
+  const ruleArgs = [events, baselines, mergedConfig, ipLoc, assets] as const;
   const skips: RuleSkip[] = [];
 
   function runRule<T>(
@@ -83,7 +90,7 @@ export function analyze(
   ];
 
   // ── Incident grouping + scoring ───────────────────────────────────────────
-  const incidents = groupIntoIncidents(allAlerts, config);
+  const incidents = groupIntoIncidents(allAlerts, mergedConfig);
 
   // ── Surface skips in the ingest report ────────────────────────────────────
   // Skips are recorded as InvalidRow-like entries so the UI's IngestPanel
@@ -103,6 +110,6 @@ export function analyze(
     parseReport: report.parseReport,
     alerts: allAlerts,
     incidents,
-    config,
+    config, // return original config, not the merged one
   };
 }
