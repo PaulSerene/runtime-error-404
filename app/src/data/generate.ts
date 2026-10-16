@@ -385,11 +385,16 @@ export function generateSyntheticLog(seed = 0xdeadbeef): GenerateResult {
 export function syntheticConfig() {
   return {
     thresholds: {
-      failedLogonsPerMinute: 5,
-      distinctHostsPerWindow: 4,
-      sprayDistinctAccountsPerWindow: 6,
-      offHoursStartHour: 7,
-      offHoursEndHour: 18,
+      failureCount: 5,
+      failureWindowMinutes: 10,
+      burstFailures: 3,
+      burstWindowMinutes: 15,
+      sprayAccounts: 5,
+      sprayWindowMinutes: 10,
+      minBaselineLogins: 10,
+      newHostCount: 3,
+      newHostWindowHours: 24,
+      incidentWindowMinutes: 60,
     },
     trainingPeriod: { start: "2024-03-01T00:00:00Z", end: "2024-03-14T23:59:59Z" },
     timezone: "UTC",
@@ -411,4 +416,17 @@ export function syntheticConfig() {
       { cidr: "185.220.101.0/24", location: "Tor Exit Node" },
     ],
   };
+}
+
+/**
+ * Alias for integration tests: generates the synthetic CSV and expected scenarios.
+ * expectedScenarios MUST NOT be imported by detection code.
+ */
+export function generateDataset(seed = 0xdeadbeef): GenerateResult {
+  return generateSyntheticLog(seed);
+}
+
+/** Alias for integration tests: returns the default config matching the generated dataset. */
+export function defaultConfig() {
+  return syntheticConfig();
 }
