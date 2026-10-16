@@ -1,0 +1,521 @@
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { projectIdentity } from "../../.agents/hooks/core/session-storage.ts";
+import {
+  activateWorkflowSession,
+  deriveMeta,
+  emitEvent,
+  emitEventWithMemory,
+  eventsPath,
+  getActiveSid,
+  indexPath,
+  metaPath,
+  readEvents,
+  readIndex,
+  retryObservePath,
+  setActiveSession,
+  sortEvents,
+  vendorHomePayload,
+} from "./events.js";
+import {
+  parseMemoryRetryLine,
+  readMemoryRetryQueue,
+} from "./memory-retry-queue.js";
+
+describe("L1 state events", () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), "oma-l1-events-"));
+  });
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("sorts events by timestamp and then eventId", () => {
+    const events = [
+      {
+        eventId: "b",
+        ts: "2026-05-25T00:00:00.000Z",
+        sid: "sid-1",
+        kind: "workflow.phase",
+        writerPid: 1,
+      },
+      {
+        eventId: "a",
+        ts: "2026-05-25T00:00:00.000Z",
+        sid: "sid-1",
+        kind: "session.created",
+        writerPid: 1,
+      },
+      {
+        eventId: "c",
+        ts: "2026-05-25T00:00:01.000Z",
+        sid: "sid-1",
+        kind: "session.ended",
+        writerPid: 1,
+      },
+    ];
+
+    expect(sortEvents(events).map((event) => event.eventId)).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("appends durable JSONL events and reads them in canonical order", () => {
+    emitEvent(projectDir, "oma-test", {
+      eventId: "002",
+      ts: "2026-05-25T00:00:01.000Z",
+      kind: "workflow.phase",
+      payload: { phase: "implement" },
+    });
+    emitEvent(projectDir, "oma-test", {
+      eventId: "001",
+      ts: "2026-05-25T00:00:00.000Z",
+      kind: "session.created",
+      vendor: "codex",
+      vendorSid: "codex-1",
+      payload: { workflow: "work", category: "main" },
+    });
+
+    const rawLines = readFileSync(eventsPath(projectDir, "oma-test"), "utf-8")
+      .trim()
+      .split("\n");
+    expect(rawLines).toHaveLength(2);
+
+    const events = readEvents(projectDir, "oma-test");
+    expect(events.map((event) => event.eventId)).toEqual(["001", "002"]);
+    expect(events[0]).toMatchObject({
+      eventId: "001",
+      sid: "oma-test",
+      kind: "session.created",
+      vendor: "codex",
+      vendorSid: "codex-1",
+    });
+  });
+
+  it("derives session metadata from event history", () => {
+    const meta = deriveMeta("oma-test", [
+      {
+        eventId: "001",
+        ts: "2026-05-25T00:00:00.000Z",
+        sid: "oma-test",
+        kind: "session.created",
+        writerPid: 1,
+        payload: { workflow: "ultrawork", category: "main" },
+      },
+      {
+        eventId: "002",
+        ts: "2026-05-25T00:00:01.000Z",
+        sid: "oma-test",
+        kind: "workflow.phase",
+        writerPid: 1,
+        payload: { phase: "review" },
+      },
+      {
+        eventId: "003",
+        ts: "2026-05-25T00:00:02.000Z",
+        sid: "oma-test",
+        kind: "gate.passed",
+        writerPid: 1,
+        payload: { gate: "peer-review", reviewer: "qa" },
+      },
+      {
+        eventId: "004",
+        ts: "2026-05-25T00:00:03.000Z",
+        sid: "oma-test",
+        kind: "session.ended",
+        writerPid: 1,
+        payload: { status: "failed" },
+      },
+    ]);
+
+    expect(meta).toMatchObject({
+      sid: "oma-test",
+      workflow: "ultrawork",
+      category: "main",
+      status: "failed",
+      currentPhase: "review",
+    });
+    expect(meta.gatesPassedBy).toEqual([
+      {
+        ts: "2026-05-25T00:00:02.000Z",
+        gate: "peer-review",
+        reviewer: "qa",
+      },
+    ]);
+  });
+
+  it("records the vendor home override on session creation", () => {
+    expect(
+      vendorHomePayload("codex", { CODEX_HOME: " /accounts/work " }),
+    ).toEqual({ vendorHome: "/accounts/work" });
+    expect(
+      vendorHomePayload("claude", { CLAUDE_CONFIG_DIR: "/accounts/claude" }),
+    ).toEqual({ vendorHome: "/accounts/claude" });
+    // Another vendor's override says nothing about this vendor's transcripts.
+    expect(
+      vendorHomePayload("claude", { CODEX_HOME: "/accounts/work" }),
+    ).toEqual({});
+    expect(
+      vendorHomePayload(undefined, { CODEX_HOME: "/accounts/work" }),
+    ).toEqual({});
+
+    vi.stubEnv("CODEX_HOME", "/accounts/work");
+    try {
+      activateWorkflowSession({
+        projectDir,
+        sid: "oma-vendor-home",
+        workflow: "work",
+        vendor: "codex",
+        vendorSid: "codex-1",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(readEvents(projectDir, "oma-vendor-home")[0]?.payload).toEqual({
+      workflow: "work",
+      category: "main",
+      vendorHome: "/accounts/work",
+    });
+  });
+
+  it("maintains active session index and writes meta on session activation", () => {
+    activateWorkflowSession({
+      projectDir,
+      sid: "oma-active",
+      workflow: "orchestrate",
+      vendor: "claude",
+      vendorSid: "claude-1",
+    });
+    setActiveSession(projectDir, "research", "oma-research");
+
+    const index = readIndex(projectDir);
+    expect(getActiveSid(index)).toBe("oma-active");
+    expect(index.active).toEqual({
+      main: "oma-active",
+      research: "oma-research",
+    });
+    expect(existsSync(indexPath(projectDir))).toBe(true);
+
+    const meta = JSON.parse(
+      readFileSync(metaPath(projectDir, "oma-active"), "utf-8"),
+    );
+    expect(meta).toMatchObject({
+      sid: "oma-active",
+      workflow: "orchestrate",
+      category: "main",
+      status: "active",
+    });
+  });
+
+  it("writes meta.json for each meta-refreshing event without leaving a temp file (issue #613)", () => {
+    for (const kind of ["session.created", "workflow.phase", "session.ended"]) {
+      emitEvent(projectDir, "oma-win", {
+        kind,
+        payload: { workflow: "debug", category: "main", status: "completed" },
+      });
+    }
+
+    // Exactly one event appended per invocation.
+    const lines = readFileSync(eventsPath(projectDir, "oma-win"), "utf-8")
+      .trim()
+      .split("\n");
+    expect(lines).toHaveLength(3);
+
+    // meta.json exists (the fsync path succeeded)...
+    const meta = metaPath(projectDir, "oma-win");
+    expect(existsSync(meta)).toBe(true);
+    expect(JSON.parse(readFileSync(meta, "utf-8"))).toMatchObject({
+      sid: "oma-win",
+      workflow: "debug",
+      status: "completed",
+    });
+
+    // ...and no atomic-write temp file is left behind.
+    const leftovers = readdirSync(dirname(meta)).filter((name) =>
+      name.includes(".tmp"),
+    );
+    expect(leftovers).toEqual([]);
+  });
+
+  it("ignores malformed JSONL lines when reading events", () => {
+    const path = eventsPath(projectDir, "oma-bad");
+    emitEvent(projectDir, "oma-bad", {
+      eventId: "001",
+      ts: "2026-05-25T00:00:00.000Z",
+      kind: "session.created",
+    });
+    writeFileSync(path, "{not json}\n", { flag: "a" });
+
+    expect(readEvents(projectDir, "oma-bad")).toHaveLength(1);
+  });
+
+  it("observes semantic events through the optional memory provider", async () => {
+    const observed: unknown[] = [];
+    const event = await emitEventWithMemory(
+      projectDir,
+      "oma-memory",
+      {
+        kind: "decision.made",
+        payload: {
+          subject: "work.remediation-choice",
+          decision: "Repair the finding",
+          rationale: "The finding blocks completion",
+        },
+      },
+      {
+        name: "agentmemory",
+        async status() {
+          return { provider: "agentmemory", reachable: true };
+        },
+        async observe(payload) {
+          observed.push(payload);
+          return true;
+        },
+      },
+    );
+
+    expect(event.kind).toBe("decision.made");
+    expect(observed).toEqual([
+      {
+        sessionId: "oma-memory",
+        content: `${JSON.stringify(event)}\n`,
+        source: "oma-workflow",
+        projectDir: projectIdentity(projectDir).projectDir,
+        profile: projectIdentity(projectDir).profile,
+      },
+    ]);
+    expect(readMemoryRetryQueue(projectDir)).toEqual([]);
+  });
+
+  it("queues semantic event retry when memory observe fails", async () => {
+    const event = await emitEventWithMemory(
+      projectDir,
+      "oma-retry",
+      {
+        eventId: "retry-event",
+        ts: "2026-05-25T00:00:00.000Z",
+        kind: "gate.passed",
+      },
+      {
+        name: "agentmemory",
+        async status() {
+          return { provider: "agentmemory", reachable: false };
+        },
+        async observe() {
+          return false;
+        },
+      },
+    );
+
+    const pending = readMemoryRetryQueue(projectDir);
+    expect(pending).toHaveLength(1);
+    if (!pending[0]) throw new Error("Expected the queued observation");
+    expect(parseMemoryRetryLine(pending[0].line)).toEqual({
+      event,
+      delivery: { observe: true, remember: false },
+      target: expect.objectContaining({
+        version: 1,
+        provider: "agentmemory",
+        projectId: projectIdentity(projectDir).projectId,
+        projectDir: projectIdentity(projectDir).projectDir,
+        profile: "0",
+      }),
+    });
+  });
+
+  it("remembers a decision.made event as a formatted durable fact", async () => {
+    const remembered: Array<{
+      sessionId: string;
+      content: string;
+      importance?: number;
+    }> = [];
+    await emitEventWithMemory(
+      projectDir,
+      "oma-decide",
+      {
+        kind: "decision.made",
+        payload: {
+          subject: "work.remediation-choice",
+          decision: "Fix the responsible QA finding.",
+          rationale: "QA flagged a HIGH issue.",
+        },
+      },
+      {
+        name: "agentmemory",
+        async status() {
+          return { provider: "agentmemory", reachable: true };
+        },
+        async observe() {
+          return true;
+        },
+        async remember(payload) {
+          remembered.push(payload);
+          return true;
+        },
+      },
+    );
+
+    expect(remembered).toEqual([
+      {
+        sessionId: "oma-decide",
+        projectDir: projectIdentity(projectDir).projectDir,
+        profile: projectIdentity(projectDir).profile,
+        content:
+          "Decision [work.remediation-choice]: Fix the responsible QA finding. Rationale: QA flagged a HIGH issue.",
+        importance: 8,
+      },
+    ]);
+  });
+
+  it("observes but does not remember scm.* decisions", async () => {
+    let rememberCalls = 0;
+    const observed: unknown[] = [];
+    await emitEventWithMemory(
+      projectDir,
+      "oma-scm",
+      {
+        kind: "decision.made",
+        payload: {
+          subject: "scm.merge-strategy",
+          decision: "Merge the feature branch.",
+          rationale: "Preserve its existing commits.",
+        },
+      },
+      {
+        name: "agentmemory",
+        async status() {
+          return { provider: "agentmemory", reachable: true };
+        },
+        async observe(payload) {
+          observed.push(payload);
+          return true;
+        },
+        async remember() {
+          rememberCalls += 1;
+          return true;
+        },
+      },
+    );
+
+    expect(observed).toHaveLength(1);
+    expect(rememberCalls).toBe(0);
+  });
+
+  it("remembers evidence-linked skill evolution patterns and gate outcomes", async () => {
+    const remembered: string[] = [];
+    const provider = {
+      name: "agentmemory" as const,
+      async status() {
+        return { provider: "agentmemory" as const, reachable: true };
+      },
+      async observe() {
+        return true;
+      },
+      async remember(payload: { content: string }) {
+        remembered.push(payload.content);
+        return true;
+      },
+    };
+
+    await emitEventWithMemory(
+      projectDir,
+      "oma-skill-evolution",
+      {
+        kind: "skill.pattern.consolidated",
+        payload: {
+          skillId: "oma-test",
+          suiteHash: "suite-1",
+          summary: "Use the structured fallback after a timeout.",
+          evidenceIds: "task-1,task-2",
+        },
+      },
+      provider,
+    );
+    await emitEventWithMemory(
+      projectDir,
+      "oma-skill-evolution",
+      {
+        kind: "skill.proposal.gated",
+        payload: {
+          skillId: "oma-test",
+          suiteHash: "suite-1",
+          edit: { op: "add", anchor: "## Rules", after: "fallback" },
+          outcome: "rejected",
+          reason: "no-validation-lift",
+          deltaLift: 0,
+        },
+      },
+      provider,
+    );
+
+    expect(remembered).toHaveLength(2);
+    expect(remembered[0]).toContain(
+      "[skill-evolution:oma-test:suite-1] Pattern:",
+    );
+    expect(remembered[0]).toContain("Evidence: task-1,task-2");
+    expect(remembered[1]).toContain("Proposal rejected:");
+    expect(remembered[1]).toContain("Reason: no-validation-lift");
+  });
+
+  it("does not remember gate-only semantic events", async () => {
+    let rememberCalls = 0;
+    await emitEventWithMemory(
+      projectDir,
+      "oma-gate",
+      { kind: "gate.passed", payload: { gate: "PLAN_GATE" } },
+      {
+        name: "agentmemory",
+        async status() {
+          return { provider: "agentmemory", reachable: true };
+        },
+        async observe() {
+          return true;
+        },
+        async remember() {
+          rememberCalls += 1;
+          return true;
+        },
+      },
+    );
+
+    expect(rememberCalls).toBe(0);
+  });
+
+  it("does not observe non-semantic events", async () => {
+    let calls = 0;
+    await emitEventWithMemory(
+      projectDir,
+      "oma-boundary",
+      {
+        kind: "boundary",
+      },
+      {
+        name: "agentmemory",
+        async status() {
+          return { provider: "agentmemory", reachable: true };
+        },
+        async observe() {
+          calls += 1;
+          return true;
+        },
+      },
+    );
+
+    expect(calls).toBe(0);
+    expect(existsSync(retryObservePath(projectDir))).toBe(false);
+  });
+});

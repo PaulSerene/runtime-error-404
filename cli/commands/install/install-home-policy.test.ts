@@ -1,0 +1,645 @@
+import * as childProcess from "node:child_process";
+import * as fs from "node:fs";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const memoryState = vi.hoisted(() => ({
+  ensureAgentMemory: vi.fn(
+    async (_options?: { onProgress?: (message: string) => void }) => ({
+      state: "ready" as const,
+      endpoint: "http://127.0.0.1:25150",
+      installed: false,
+      started: false,
+      reused: true,
+    }),
+  ),
+}));
+vi.mock("../../io/agentmemory/ensure.js", () => memoryState);
+
+const promptState = vi.hoisted(() => ({
+  select: vi.fn(),
+  multiselect: vi.fn(),
+  confirm: vi.fn(),
+  isCancel: vi.fn(() => false),
+  spinner: vi.fn(() => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+    message: vi.fn(),
+  })),
+  intro: vi.fn(),
+  outro: vi.fn(),
+  note: vi.fn(),
+  cancel: vi.fn(),
+  log: {
+    success: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+  },
+}));
+
+const fsState = vi.hoisted(() => ({
+  existsSync: vi.fn(),
+  readdirSync: vi.fn(),
+  readFileSync: vi.fn(),
+  writeFileSync: vi.fn(),
+  mkdirSync: vi.fn(),
+  rmdirSync: vi.fn(),
+  unlinkSync: vi.fn(),
+  renameSync: vi.fn(),
+  statSync: vi.fn(),
+  lstatSync: vi.fn(),
+  copyFileSync: vi.fn(),
+}));
+
+const githubState = vi.hoisted(() => ({
+  isGhInstalled: vi.fn(() => false),
+  isGhAuthenticated: vi.fn(() => false),
+  isAlreadyStarred: vi.fn(() => false),
+}));
+
+const skillsState = vi.hoisted(() => ({
+  PRESETS: { custom: [] },
+  INSTALLED_SKILLS_DIR: ".agents/skills",
+  REPO: "first-fluke/oh-my-agent",
+  CLI_SKILLS_DIR: {
+    claude: { projectPath: ".claude/skills", homePath: ".claude/skills" },
+    codex: { projectPath: ".codex/skills", homePath: ".codex/skills" },
+    copilot: { projectPath: ".github/skills", homePath: ".copilot/skills" },
+    cursor: { projectPath: ".cursor/skills", homePath: ".cursor/skills" },
+    gemini: { projectPath: ".gemini/skills", homePath: ".gemini/skills" },
+    hermes: {
+      projectPath: ".hermes/skills/oma",
+      homePath: ".hermes/skills/oma",
+      requiresHomeConsent: true,
+    },
+    qwen: { projectPath: ".qwen/skills", homePath: ".qwen/skills" },
+  },
+  getAllSkills: vi.fn(() => [
+    { name: "oma-frontend", desc: "Frontend skill" },
+    { name: "oma-pm", desc: "PM skill" },
+  ]),
+  installShared: vi.fn(),
+  installHooks: vi.fn(),
+  installAgents: vi.fn(),
+  installWorkflows: vi.fn(),
+  installCopilotWorkflowPrompts: vi.fn(),
+  installRules: vi.fn(),
+  installConfigs: vi.fn(),
+  installSkill: vi.fn(),
+  installVendorAdaptations: vi.fn(),
+  getInstalledWorkflowNames: vi.fn(() => []),
+  createVendorWorkflowSymlinks: vi.fn(() => ({ created: [], skipped: [] })),
+  createVendorSymlinks: vi.fn<
+    (
+      targetDir: string,
+      cliTools: string[],
+      skillNames: string[],
+    ) => { created: string[]; skipped: string[]; removed: string[] }
+  >(() => ({ created: [], skipped: [], removed: [] })),
+  createCliSymlinks: vi.fn<
+    (
+      targetDir: string,
+      cliTools: string[],
+      skillNames: string[],
+    ) => { created: string[]; skipped: string[]; removed: string[] }
+  >(() => ({ created: [], skipped: [], removed: [] })),
+  applyCursorMcpSymlink: vi.fn(),
+  applyCursorMcpConfig: vi.fn(),
+  readVendorsFromConfig: vi.fn(() => []),
+  vendorRequiresHomeConsent: vi.fn((cli: string) => cli === "hermes"),
+  getVendorDisplayPath: vi.fn((cli: string) =>
+    cli === "hermes" ? "~/.hermes/skills/oma" : `.${cli}/skills`,
+  ),
+  isHookVendor: vi.fn((v: string) =>
+    ["claude", "codex", "cursor", "gemini", "qwen"].includes(v),
+  ),
+  isExtensionVendor: vi.fn((v: string) => v === "pi"),
+  writeVendorsToConfig: vi.fn(),
+}));
+
+const miscState = vi.hoisted(() => ({
+  runMigrations: vi.fn(() => []),
+  promptUninstallCompetitors: vi.fn(async () => {}),
+  downloadAndExtract: vi.fn(async () => ({
+    dir: "/tmp/mock-repo",
+    cleanup: vi.fn(),
+  })),
+  getLocalVersion: vi.fn(async () => null),
+  saveLocalVersion: vi.fn(async () => {}),
+  applyCursorRules: vi.fn(() => []),
+  mergeRulesIndexForVendor: vi.fn(() => false),
+  ensureSerenaProject: vi.fn(() => ({ configured: false, registered: false })),
+  ensureOmaSerenaContexts: vi.fn(() => ({ changed: [], failed: [] })),
+  resolveSerenaLanguages: vi.fn(() => ["typescript"]),
+  ensureSerenaBinary: vi.fn(() => ({ status: "present" })),
+}));
+
+vi.mock("@clack/prompts", () => promptState);
+
+vi.mock("picocolors", () => ({
+  default: new Proxy(
+    {},
+    {
+      get: () => (value: string) => value,
+    },
+  ),
+}));
+
+vi.mock("node:fs", () => fsState);
+vi.mock("node:child_process", () => ({ execSync: vi.fn() }));
+
+vi.mock("../../io/github.js", () => githubState);
+vi.mock("../../platform/skills-installer.js", () => skillsState);
+vi.mock("../../platform/provider-mcp.js", () => ({
+  syncProviderMcp: vi.fn(() => []),
+}));
+vi.mock("../migrations/index.js", () => ({
+  runMigrations: miscState.runMigrations,
+}));
+vi.mock("../../utils/competitors.js", () => ({
+  promptUninstallCompetitors: miscState.promptUninstallCompetitors,
+}));
+vi.mock("../../io/tarball.js", () => ({
+  downloadAndExtract: miscState.downloadAndExtract,
+}));
+vi.mock("../../platform/manifest.js", () => ({
+  getLocalVersion: miscState.getLocalVersion,
+  saveLocalVersion: miscState.saveLocalVersion,
+}));
+vi.mock("../../platform/rules.js", () => ({
+  applyCursorRules: miscState.applyCursorRules,
+  mergeRulesIndexForVendor: miscState.mergeRulesIndexForVendor,
+}));
+vi.mock("../../io/git-recommended.js", () => ({
+  maybeApplyRecommendedGitConfig: vi.fn(async () => ({
+    available: true,
+    applied: [],
+    skipped: [],
+    alreadyOk: ["rerere.enabled", "init.defaultBranch"],
+  })),
+}));
+
+vi.mock("../../io/serena.js", () => ({
+  ensureSerenaProject: miscState.ensureSerenaProject,
+  ensureOmaSerenaContexts: miscState.ensureOmaSerenaContexts,
+  resolveSerenaLanguages: miscState.resolveSerenaLanguages,
+  // Detection is exercised in io/serena.test.ts; here it passes the
+  // skill-derived set straight through.
+  deriveSerenaLanguages: (_cwd: string, languages: string[]) => ({ languages }),
+  ensureSerenaBinary: miscState.ensureSerenaBinary,
+  SERENA_INSTALL_HINT:
+    "uv tool install -p 3.13 serena-agent@latest --prerelease=allow",
+}));
+const gortexState = vi.hoisted(() => ({
+  ensureGortexProject: vi.fn(() => ({
+    binaryAvailable: true,
+    tracked: "tracked",
+    excludes: { status: "reconciled", added: [".agents/results/"] },
+  })),
+}));
+vi.mock("../../io/gortex.js", () => gortexState);
+vi.mock("../../utils/install-lock.js", () => ({
+  acquireLock: vi.fn(() => ({ ok: true, release: () => {} })),
+  bindInstallLockRelease: vi.fn((release: () => void) => release),
+}));
+
+import {
+  _resetInstallContext,
+  setInstallContext,
+} from "../../platform/install-context.js";
+import { install } from "../install/run.js";
+
+describe("install home policy", () => {
+  const originalHome = process.env.HOME;
+  const originalCi = process.env.CI;
+  const originalOmaYes = process.env.OMA_YES;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    memoryState.ensureAgentMemory.mockReset().mockResolvedValue({
+      state: "ready",
+      endpoint: "http://127.0.0.1:25150",
+      installed: false,
+      started: false,
+      reused: true,
+    });
+    promptState.select.mockReset();
+    promptState.multiselect.mockReset();
+
+    _resetInstallContext();
+    setInstallContext({ installRoot: process.cwd(), mode: "project" });
+
+    process.env.HOME = "/tmp/test-home";
+    // Force interactive mode regardless of host env (GitHub Actions sets
+    // CI=true, which would otherwise activate non-interactive yes-mode and
+    // bypass the multiselect mocks below).
+    delete process.env.CI;
+    delete process.env.OMA_YES;
+
+    // Language, three providers, model preset, then project type.
+    promptState.select
+      .mockResolvedValueOnce("en")
+      .mockResolvedValueOnce("serena")
+      .mockResolvedValueOnce("agentmemory")
+      .mockResolvedValueOnce("native")
+      .mockResolvedValueOnce("claude")
+      .mockResolvedValueOnce("custom");
+    // Multiselect prompts: vendors, browsers, then skills
+    promptState.multiselect
+      .mockResolvedValueOnce(["gemini"])
+      .mockResolvedValueOnce(["aside"])
+      .mockResolvedValueOnce(["oma-frontend"]);
+    // Default: any consent prompt receives "false"
+    promptState.confirm.mockResolvedValue(false);
+
+    fsState.existsSync.mockImplementation((path: string) => {
+      const normalized = path.replaceAll("\\", "/");
+      return normalized.endsWith("/.agents/oma-config.yaml");
+    });
+    fsState.readdirSync.mockReturnValue([]);
+    let configYaml = "language: en\n";
+    fsState.readFileSync.mockImplementation(() => configYaml);
+    fsState.writeFileSync.mockImplementation((file, content) => {
+      if (file === join(process.cwd(), ".agents", "oma-config.yaml")) {
+        configYaml = String(content);
+      }
+    });
+  });
+
+  afterEach(() => {
+    process.env.HOME = originalHome;
+    if (originalCi === undefined) delete process.env.CI;
+    else process.env.CI = originalCi;
+    if (originalOmaYes === undefined) delete process.env.OMA_YES;
+    else process.env.OMA_YES = originalOmaYes;
+    _resetInstallContext();
+    vi.restoreAllMocks();
+  });
+
+  // --- Baseline invariant: non-hermes vendors never write HOME ---
+
+  it("does not write to HOME-level vendor settings (non-hermes)", async () => {
+    await install();
+
+    const writes = (
+      fs.writeFileSync as ReturnType<typeof vi.fn>
+    ).mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(writes.length).toBeGreaterThan(0);
+    expect(
+      writes.some(
+        (path) =>
+          path.startsWith("/tmp/test-home/.gemini/") ||
+          path.startsWith("/tmp/test-home/.claude/"),
+      ),
+    ).toBe(false);
+
+    const execCalls = (
+      childProcess.execSync as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.map((call: unknown[]) => String(call[0]));
+    expect(execCalls.some((cmd) => cmd.includes("git config --global"))).toBe(
+      false,
+    );
+  });
+
+  it("prepares shared memory for a project install before reporting completion", async () => {
+    await install({ yes: true });
+
+    expect(memoryState.ensureAgentMemory).toHaveBeenCalledExactlyOnceWith({
+      onProgress: expect.any(Function),
+    });
+    expect(
+      memoryState.ensureAgentMemory.mock.invocationCallOrder[0],
+    ).toBeLessThan(promptState.outro.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  // --- Browser MCP default: Aside only when a person chooses it ---
+
+  it("selects no browser MCP for a non-interactive install", async () => {
+    const { ensureAsideInstalled } = await import("../../vendors/aside.js");
+
+    await install({ yes: true });
+
+    expect(ensureAsideInstalled).toHaveBeenCalledExactlyOnceWith([]);
+    expect(promptState.multiselect).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("browser MCP"),
+      }),
+    );
+    const savedConfig = fsState.writeFileSync.mock.calls
+      .filter(
+        (call: unknown[]) =>
+          call[0] === join(process.cwd(), ".agents", "oma-config.yaml"),
+      )
+      .map((call: unknown[]) => String(call[1]))
+      .at(-1);
+    expect(savedConfig).toMatch(/devtools_browsers: \[\]/);
+  });
+
+  it("preselects Aside for an interactive install", async () => {
+    const { ensureAsideInstalled } = await import("../../vendors/aside.js");
+
+    await install();
+
+    expect(promptState.multiselect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("browser MCP"),
+        initialValues: ["aside"],
+      }),
+    );
+    expect(ensureAsideInstalled).toHaveBeenCalledExactlyOnceWith(["aside"]);
+  });
+
+  it.each(["none", "honcho"] as const)(
+    "preserves the project memory opt-out %s",
+    async (semanticMemory) => {
+      await install({ yes: true, semanticMemory });
+
+      expect(memoryState.ensureAgentMemory).not.toHaveBeenCalled();
+      expect(promptState.outro).toHaveBeenCalledWith("Done!");
+    },
+  );
+
+  // --- Gortex project setup: project mode tracks the install root ---
+
+  it("runs Gortex project setup against the install root in project mode", async () => {
+    await install({ yes: true, codeIntelligence: "gortex" });
+
+    expect(gortexState.ensureGortexProject).toHaveBeenCalledTimes(1);
+    expect(gortexState.ensureGortexProject).toHaveBeenCalledWith(process.cwd());
+    expect(miscState.ensureSerenaProject).not.toHaveBeenCalled();
+    expect(miscState.ensureSerenaBinary).not.toHaveBeenCalled();
+  });
+
+  it("does not run Gortex project setup when Serena is selected", async () => {
+    await install({ yes: true, codeIntelligence: "serena" });
+
+    expect(gortexState.ensureGortexProject).not.toHaveBeenCalled();
+    expect(miscState.ensureSerenaProject).toHaveBeenCalled();
+  });
+
+  // --- Hermes consent gate: explicit opt-in required ---
+
+  it("does NOT add hermes to selectedClis when consent declined", async () => {
+    promptState.multiselect.mockReset();
+    promptState.multiselect
+      .mockResolvedValueOnce(["hermes"])
+      .mockResolvedValueOnce(["aside"])
+      .mockResolvedValueOnce(["oma-frontend"]);
+    promptState.confirm.mockResolvedValue(false); // consent denied
+
+    await install();
+
+    const symlinkCalls = skillsState.createVendorSymlinks.mock.calls;
+    expect(symlinkCalls.length).toBeGreaterThan(0);
+    // hermes must not be in the cliTools array passed to createVendorSymlinks
+    for (const call of symlinkCalls) {
+      const cliTools = call[1];
+      expect(cliTools).not.toContain("hermes");
+    }
+  });
+
+  it("adds hermes to selectedClis when consent granted", async () => {
+    promptState.multiselect.mockReset();
+    promptState.multiselect
+      .mockResolvedValueOnce(["hermes"])
+      .mockResolvedValueOnce(["aside"])
+      .mockResolvedValueOnce(["oma-frontend"]);
+    promptState.confirm.mockResolvedValue(true); // consent granted
+
+    await install();
+
+    const symlinkCalls = skillsState.createVendorSymlinks.mock.calls;
+    const allCliTools = symlinkCalls.flatMap((c) => c[1]);
+    expect(allCliTools).toContain("hermes");
+  });
+
+  it("never passes hermes to installVendorAdaptations (no hook bridge)", async () => {
+    promptState.multiselect.mockReset();
+    promptState.multiselect
+      .mockResolvedValueOnce(["claude", "hermes"])
+      .mockResolvedValueOnce(["aside"])
+      .mockResolvedValueOnce(["oma-frontend"]);
+    promptState.confirm.mockResolvedValue(true); // hermes consent granted
+
+    await install();
+
+    const adaptCalls = skillsState.installVendorAdaptations.mock.calls;
+    for (const call of adaptCalls) {
+      const hookVendors = call[2] as string[];
+      expect(hookVendors).not.toContain("hermes");
+      expect(hookVendors).not.toContain("copilot");
+    }
+  });
+
+  it("isolates HOME write — gemini selected does NOT trigger gemini HOME write", async () => {
+    promptState.multiselect.mockReset();
+    promptState.multiselect
+      .mockResolvedValueOnce(["gemini", "hermes"])
+      .mockResolvedValueOnce(["aside"])
+      .mockResolvedValueOnce(["oma-frontend"]);
+    promptState.confirm.mockResolvedValue(true); // hermes consent granted
+
+    await install();
+
+    const writes = (
+      fs.writeFileSync as ReturnType<typeof vi.fn>
+    ).mock.calls.map((call: unknown[]) => String(call[0]));
+    // Gemini settings remain project-local — never HOME
+    expect(
+      writes.some((path) => path.startsWith("/tmp/test-home/.gemini/")),
+    ).toBe(false);
+  });
+
+  // --- Prompt option list: Antigravity replaces Gemini (deprecation cutover) ---
+
+  it("offers Antigravity (not Gemini) and OpenCode in the CLI tools prompt", async () => {
+    await install();
+
+    const cliToolsCall = promptState.multiselect.mock.calls.find((call) =>
+      call[0]?.message?.startsWith("CLI tools to configure"),
+    );
+    expect(cliToolsCall).toBeDefined();
+    if (!cliToolsCall) throw new Error("CLI tools prompt not found");
+
+    const optionValues = (cliToolsCall[0].options as { value: string }[]).map(
+      (opt) => opt.value,
+    );
+
+    expect(optionValues).toContain("antigravity");
+    expect(optionValues).not.toContain("gemini");
+    // OpenCode is selectable from the install picker (issue #575) so users no
+    // longer need a follow-up `oma link opencode` step.
+    expect(optionValues).toContain("opencode");
+    // The CLI selection step is skippable — clack multiselect must allow an
+    // empty selection (required: false).
+    expect(cliToolsCall?.[0].required).toBe(false);
+  });
+});
+
+// ── Task 45 — EC-12: cwd === homedir() guard tests ────────────────────────────
+
+describe("install EC-12 — cwd equals homedir guard", () => {
+  // The EC-12 guard lives at install.ts line ~269:
+  //   if (getInstallMode() === "project" && process.cwd() === homedir()) { ... }
+  //
+  // Spy infrastructure: process.cwd and process.exit are spied per test.
+  // The promptState mock is already wired up via vi.mock("@clack/prompts").
+
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  // Stable home value for all EC-12 tests — must NOT equal process.env.HOME
+  // that was set by beforeEach (/tmp/test-home), so we pick the same value.
+  const fakeHome = "/tmp/test-home";
+
+  beforeEach(() => {
+    // vi.clearAllMocks doesn't always clear hoisted mock call history across
+    // nested describes — clear explicitly to prevent test bleeding.
+    promptState.cancel.mockClear();
+    promptState.confirm.mockClear();
+    promptState.select
+      .mockReset()
+      .mockImplementation(
+        async (options) => options.initialValue ?? options.options[0]?.value,
+      );
+    promptState.multiselect.mockReset().mockResolvedValue([]);
+    // Throw on exit so install() stops at the EC-12 guard instead of running
+    // the rest of the flow (multiselect mocks etc. would otherwise fire).
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code: number) => {
+      throw new Error(`__EXIT__${code}`);
+    }) as never);
+  });
+
+  afterEach(() => {
+    cwdSpy?.mockRestore();
+    exitSpy?.mockRestore();
+  });
+
+  it("EC-12-1: non-interactive + cwd=HOME + project mode => cancel + exit(1)", async () => {
+    // Make cwd() === homedir()
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(fakeHome);
+
+    // Set HOME env so homedir() resolves to fakeHome
+    process.env.HOME = fakeHome;
+    process.env.CI = "true"; // non-interactive
+
+    _resetInstallContext();
+    setInstallContext({ installRoot: process.cwd(), mode: "project" });
+
+    await expect(install()).rejects.toThrow(/__EXIT__1/);
+
+    expect(promptState.cancel).toHaveBeenCalledWith(
+      expect.stringContaining("--global"),
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it("EC-12-2: interactive + cwd=HOME + project mode + confirm=false => prompt fires + exit(0)", async () => {
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(fakeHome);
+    process.env.HOME = fakeHome;
+    delete process.env.CI;
+
+    _resetInstallContext();
+    setInstallContext({ installRoot: process.cwd(), mode: "project" });
+
+    // First confirm call = EC-12 consent prompt => user declines
+    promptState.confirm.mockResolvedValueOnce(false);
+
+    await expect(install()).rejects.toThrow(/__EXIT__0/);
+
+    // EC-12 confirm must have been called
+    expect(promptState.confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining("HOME"),
+      }),
+    );
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("EC-12-3: interactive + cwd=HOME + project mode + confirm=true => install proceeds past guard", async () => {
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(fakeHome);
+    process.env.HOME = fakeHome;
+    delete process.env.CI;
+
+    _resetInstallContext();
+    setInstallContext({ installRoot: process.cwd(), mode: "project" });
+
+    // EC-12 consent: user approves
+    promptState.confirm.mockResolvedValueOnce(true);
+    // Subsequent confirms (global consent, etc.): decline to keep the test minimal
+    promptState.confirm.mockResolvedValue(false);
+
+    // install may complete or throw later; we only care the EC-12 prompt fired
+    // and exit(1) was NOT called via the EC-12 abort path.
+    try {
+      await install();
+    } catch {
+      // ignore: any later exit() throws are fine
+    }
+
+    // The first confirm was the EC-12 prompt; install continued past it
+    expect(promptState.confirm).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining("HOME") }),
+    );
+    // exit should NOT have been called with 1 (EC-12 abort path)
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
+  it("EC-12-4: cwd=HOME + global mode => no EC-12 cancel", async () => {
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(fakeHome);
+    process.env.HOME = fakeHome;
+    process.env.CI = "true";
+    process.env.OMA_YES = "1";
+
+    _resetInstallContext();
+    // Global mode — EC-12 guard only fires in project mode
+    setInstallContext({ installRoot: fakeHome, mode: "global" });
+
+    try {
+      await install({ yes: true });
+    } catch {
+      // ignore late exits
+    }
+
+    // EC-12 cancel message must NOT have been emitted
+    const cancelCalls = (promptState.cancel as ReturnType<typeof vi.fn>).mock
+      .calls;
+    const hasEc12Cancel = cancelCalls.some((args: unknown[]) =>
+      String(args[0]).includes("Refusing to install in HOME without"),
+    );
+    expect(hasEc12Cancel).toBe(false);
+  });
+
+  it("EC-12-5: cwd != HOME + project mode => install proceeds normally past guard", async () => {
+    // cwd is a temp dir, not HOME — EC-12 guard must not fire
+    cwdSpy = vi.spyOn(process, "cwd").mockReturnValue("/tmp/my-project");
+    process.env.HOME = fakeHome;
+    process.env.CI = "true";
+    process.env.OMA_YES = "1";
+
+    _resetInstallContext();
+    setInstallContext({ installRoot: "/tmp/my-project", mode: "project" });
+
+    try {
+      await install({ yes: true });
+    } catch {
+      // ignore late exits
+    }
+
+    // Confirm must NOT have been called for EC-12 (no HOME equality)
+    const ec12CancelCalls = (
+      promptState.cancel as ReturnType<typeof vi.fn>
+    ).mock.calls.filter((args: unknown[]) =>
+      String(args[0]).includes("Refusing to install in HOME without"),
+    );
+    expect(ec12CancelCalls).toHaveLength(0);
+    // exit(1) via EC-12 path must not have fired
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+});
+
+vi.mock("../../vendors/aside.js", () => ({
+  ensureAsideInstalled: vi.fn(),
+  resolveAsideCommand: () => "aside",
+}));

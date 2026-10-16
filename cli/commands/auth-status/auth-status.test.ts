@@ -1,0 +1,425 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { firstCall } from "../../__tests__/helpers.js";
+
+const mockFsFunctions = vi.hoisted(() => ({
+  existsSync: vi.fn(),
+  readFileSync: vi.fn(),
+}));
+
+vi.mock("node:fs", async () => ({
+  default: mockFsFunctions,
+  ...mockFsFunctions,
+}));
+
+const execSyncMock = vi.fn();
+vi.mock("node:child_process", () => ({
+  execSync: (...args: unknown[]) => execSyncMock(...args),
+}));
+
+const isGhAuthenticatedMock = vi.fn();
+vi.mock("../../io/github.js", () => ({
+  isGhAuthenticated: () => isGhAuthenticatedMock(),
+}));
+
+vi.mock("@clack/prompts", () => ({
+  intro: vi.fn(),
+  outro: vi.fn(),
+  note: vi.fn(),
+}));
+
+import { checkAuthStatus } from "../auth-status/check.js";
+
+describe("auth:status command", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("CURSOR_API_KEY", "");
+    // pi auth reads provider API keys from the real environment; neutralize them
+    // so pi's authenticated state is driven by the mocked auth.json alone.
+    for (const key of [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "XAI_API_KEY",
+      "MISTRAL_API_KEY",
+      "AZURE_OPENAI_API_KEY",
+      "KIMI_API_KEY",
+      "MOONSHOT_API_KEY",
+    ]) {
+      vi.stubEnv(key, "");
+    }
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  describe("all authenticated", () => {
+    it("should report all as authenticated in JSON mode", async () => {
+      isGhAuthenticatedMock.mockReturnValue(true);
+      execSyncMock.mockReturnValue(JSON.stringify({ loggedIn: true }));
+      mockFsFunctions.existsSync.mockReturnValue(true);
+      mockFsFunctions.readFileSync.mockImplementation((path: string) => {
+        if (path.includes(".gemini")) {
+          return JSON.stringify({
+            access_token: "ya29.xxx",
+            refresh_token: "1//xxx",
+          });
+        }
+        if (path.includes(".codex")) {
+          return JSON.stringify({
+            tokens: { access_token: "tok_xxx" },
+          });
+        }
+        if (path.includes(".qwen")) {
+          return JSON.stringify({
+            security: { auth: { selectedType: "openai" } },
+          });
+        }
+        if (path.includes(".pi")) {
+          return JSON.stringify({ anthropic: { key: "sk-ant-xxx" } });
+        }
+        if (path.includes("opencode")) {
+          return JSON.stringify({
+            "opencode-go": { type: "api", key: "sk-opencode-xxx" },
+          });
+        }
+        return "{}";
+      });
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result).toEqual({
+        github: true,
+        claude: true,
+        codex: true,
+        commandcode: true,
+        cursor: true,
+        qwen: true,
+        antigravity: false,
+        grok: false,
+        kimi: false,
+        kiro: true,
+        pi: true,
+        opencode: true,
+      });
+    });
+  });
+
+  describe("none authenticated", () => {
+    it("should report all as not authenticated in JSON mode", async () => {
+      isGhAuthenticatedMock.mockReturnValue(false);
+      execSyncMock.mockImplementation(() => {
+        throw new Error("not authenticated");
+      });
+      mockFsFunctions.existsSync.mockReturnValue(false);
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result).toEqual({
+        github: false,
+        claude: false,
+        codex: false,
+        commandcode: false,
+        cursor: false,
+        qwen: false,
+        antigravity: false,
+        grok: false,
+        kimi: false,
+        kiro: false,
+        pi: false,
+        opencode: false,
+      });
+    });
+  });
+
+  describe("claude auth", () => {
+    beforeEach(() => {
+      isGhAuthenticatedMock.mockReturnValue(false);
+      mockFsFunctions.existsSync.mockReturnValue(false);
+    });
+
+    it("should detect claude loggedIn: true", async () => {
+      execSyncMock.mockReturnValue(JSON.stringify({ loggedIn: true }));
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.claude).toBe(true);
+    });
+
+    it("should detect claude loggedIn: false", async () => {
+      execSyncMock.mockReturnValue(JSON.stringify({ loggedIn: false }));
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.claude).toBe(false);
+    });
+
+    it("should handle invalid JSON from claude", async () => {
+      execSyncMock.mockReturnValue("not json");
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.claude).toBe(false);
+    });
+  });
+
+  describe("codex auth", () => {
+    beforeEach(() => {
+      isGhAuthenticatedMock.mockReturnValue(false);
+      execSyncMock.mockImplementation(() => {
+        throw new Error("fail");
+      });
+    });
+
+    it("should detect valid auth.json with tokens", async () => {
+      mockFsFunctions.existsSync.mockImplementation((p: string) =>
+        p.includes(".codex"),
+      );
+      mockFsFunctions.readFileSync.mockReturnValue(
+        JSON.stringify({ tokens: { access_token: "tok_xxx" } }),
+      );
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.codex).toBe(true);
+    });
+
+    it("should return false when tokens missing", async () => {
+      mockFsFunctions.existsSync.mockImplementation((p: string) =>
+        p.includes(".codex"),
+      );
+      mockFsFunctions.readFileSync.mockReturnValue(JSON.stringify({}));
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.codex).toBe(false);
+    });
+  });
+
+  describe("cursor auth", () => {
+    beforeEach(() => {
+      isGhAuthenticatedMock.mockReturnValue(false);
+      mockFsFunctions.existsSync.mockReturnValue(false);
+    });
+
+    it("should detect authenticated status output", async () => {
+      execSyncMock.mockImplementation((command: string) => {
+        if (command === "cursor-agent status") return "Authenticated";
+        throw new Error("fail");
+      });
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.cursor).toBe(true);
+    });
+
+    it("should detect authenticated nested cursor agent status output", async () => {
+      execSyncMock.mockImplementation((command: string) => {
+        if (command === "cursor-agent status") {
+          throw new Error("old command unavailable");
+        }
+        if (command === "cursor agent status") return "✓ Logged in as user";
+        throw new Error("fail");
+      });
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.cursor).toBe(true);
+    });
+
+    it("should detect CURSOR_API_KEY", async () => {
+      vi.stubEnv("CURSOR_API_KEY", "cursor-key");
+      execSyncMock.mockImplementation(() => {
+        throw new Error("fail");
+      });
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.cursor).toBe(true);
+    });
+
+    it("should return false when cursor-agent is not authenticated", async () => {
+      execSyncMock.mockImplementation((command: string) => {
+        if (command === "cursor-agent status") return "Not authenticated";
+        throw new Error("fail");
+      });
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.cursor).toBe(false);
+    });
+  });
+
+  describe("qwen auth", () => {
+    beforeEach(() => {
+      isGhAuthenticatedMock.mockReturnValue(false);
+      execSyncMock.mockImplementation(() => {
+        throw new Error("fail");
+      });
+    });
+
+    it("should detect valid settings with selectedType", async () => {
+      mockFsFunctions.existsSync.mockImplementation((p: string) =>
+        p.includes(".qwen"),
+      );
+      mockFsFunctions.readFileSync.mockReturnValue(
+        JSON.stringify({
+          security: { auth: { selectedType: "qwen-oauth" } },
+        }),
+      );
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.qwen).toBe(true);
+    });
+
+    it("should return false when settings file missing", async () => {
+      mockFsFunctions.existsSync.mockReturnValue(false);
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.qwen).toBe(false);
+    });
+
+    it("should return false when selectedType is missing", async () => {
+      mockFsFunctions.existsSync.mockImplementation((p: string) =>
+        p.includes(".qwen"),
+      );
+      mockFsFunctions.readFileSync.mockReturnValue(
+        JSON.stringify({ security: {} }),
+      );
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.qwen).toBe(false);
+    });
+  });
+
+  describe("interactive mode", () => {
+    it("should render table via p.note when not in JSON mode", async () => {
+      isGhAuthenticatedMock.mockReturnValue(true);
+      execSyncMock.mockReturnValue(JSON.stringify({ loggedIn: true }));
+      mockFsFunctions.existsSync.mockReturnValue(true);
+      mockFsFunctions.readFileSync.mockImplementation((path: string) => {
+        if (path.includes(".gemini")) {
+          return JSON.stringify({
+            access_token: "ya29.xxx",
+            refresh_token: "1//xxx",
+          });
+        }
+        if (path.includes(".codex")) {
+          return JSON.stringify({
+            tokens: { access_token: "tok_xxx" },
+          });
+        }
+        if (path.includes(".qwen")) {
+          return JSON.stringify({
+            security: { auth: { selectedType: "openai" } },
+          });
+        }
+        if (path.includes(".pi")) {
+          return JSON.stringify({ anthropic: { key: "sk-ant-xxx" } });
+        }
+        return "{}";
+      });
+
+      const prompts = await import("@clack/prompts");
+      await checkAuthStatus(false);
+
+      expect(prompts.intro).toHaveBeenCalled();
+      expect(prompts.note).toHaveBeenCalledWith(
+        expect.stringContaining("GitHub"),
+        "Authentication Status",
+      );
+      expect(prompts.outro).toHaveBeenCalled();
+    });
+
+    it("should render login hints for unauthenticated CLIs", async () => {
+      isGhAuthenticatedMock.mockReturnValue(false);
+      execSyncMock.mockImplementation(() => {
+        throw new Error("not authenticated");
+      });
+      mockFsFunctions.existsSync.mockReturnValue(false);
+
+      const prompts = await import("@clack/prompts");
+      await checkAuthStatus(false);
+
+      expect(prompts.outro).toHaveBeenCalledWith(
+        expect.stringContaining("GitHub:"),
+      );
+      expect(prompts.outro).toHaveBeenCalledWith(
+        expect.stringContaining("Cursor CLI:"),
+      );
+      expect(prompts.outro).toHaveBeenCalledWith(
+        expect.stringContaining("cursor agent login"),
+      );
+    });
+  });
+
+  describe("corrupted files", () => {
+    beforeEach(() => {
+      isGhAuthenticatedMock.mockReturnValue(false);
+      execSyncMock.mockImplementation(() => {
+        throw new Error("fail");
+      });
+    });
+
+    it("should handle corrupted JSON files gracefully", async () => {
+      mockFsFunctions.existsSync.mockReturnValue(true);
+      mockFsFunctions.readFileSync.mockReturnValue("{invalid json");
+
+      const consoleSpy = vi.spyOn(console, "log");
+      await checkAuthStatus(true);
+
+      const [output] = firstCall(consoleSpy);
+      const result = JSON.parse(output);
+      expect(result.codex).toBe(false);
+      expect(result.qwen).toBe(false);
+    });
+  });
+});

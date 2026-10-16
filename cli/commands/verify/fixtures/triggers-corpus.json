@@ -1,0 +1,1124 @@
+[
+  {
+    "prompt": "Please handle everything for this deployment while I step away.",
+    "lang": "en",
+    "expected": "orchestrate"
+  },
+  {
+    "prompt": "Just automate the whole onboarding pipeline end to end.",
+    "lang": "en",
+    "expected": "orchestrate"
+  },
+  {
+    "prompt": "Run everything in parallel so the tests finish faster.",
+    "lang": "en",
+    "expected": "orchestrate"
+  },
+  {
+    "prompt": "이 배포 작업 전부 해줘, 순서는 알아서 맞춰도 돼.",
+    "lang": "ko",
+    "expected": "orchestrate"
+  },
+  {
+    "prompt": "테스트들 병렬 실행해줘, 시간 없어.",
+    "lang": "ko",
+    "expected": null,
+    "note": "relabeled: running a test suite in parallel is a test-runner request, not multi-agent orchestration — same as the English 'run the tests in parallel' (bare 병렬 실행/parallel triggers narrowed)"
+  },
+  {
+    "prompt": "이 작업들 전부 병렬로 돌려줘, 시간 없어.",
+    "lang": "ko",
+    "expected": "orchestrate",
+    "note": "scope-wide parallel request ('전부 병렬로') still routes to orchestrate"
+  },
+  {
+    "prompt": "이 마이그레이션 자동으로 처리해줘.",
+    "lang": "ko",
+    "expected": "orchestrate"
+  },
+  {
+    "prompt": "Kick off ultrawork on this refactor, I want the full gate loop.",
+    "lang": "en",
+    "expected": "ultrawork"
+  },
+  {
+    "prompt": "Let's do ulw for this feature since it touches multiple modules.",
+    "lang": "en",
+    "expected": "ultrawork"
+  },
+  {
+    "prompt": "Start ultrawork mode to review and fix everything end to end.",
+    "lang": "en",
+    "expected": "ultrawork"
+  },
+  {
+    "prompt": "이 리팩토링 ultrawork로 끝까지 해줘.",
+    "lang": "ko",
+    "expected": "ultrawork"
+  },
+  {
+    "prompt": "로그인 버그 ulw로 전부 고쳐줘.",
+    "lang": "ko",
+    "expected": "ultrawork"
+  },
+  {
+    "prompt": "이번 기능 ultrawork 모드로 진행해줘.",
+    "lang": "ko",
+    "expected": "ultrawork"
+  },
+  {
+    "prompt": "We need an architecture review before splitting this into microservices.",
+    "lang": "en",
+    "expected": "architecture"
+  },
+  {
+    "prompt": "Let's do a tradeoff analysis for the module boundary between billing and orders.",
+    "lang": "en",
+    "expected": "architecture"
+  },
+  {
+    "prompt": "Write the ADR for this new service boundary decision.",
+    "lang": "en",
+    "expected": "architecture"
+  },
+  {
+    "prompt": "이 프로젝트 아키텍처 리뷰 좀 해줘.",
+    "lang": "ko",
+    "expected": "architecture"
+  },
+  {
+    "prompt": "결제랑 주문 서비스 모듈 경계를 정리해줘.",
+    "lang": "ko",
+    "expected": "architecture"
+  },
+  {
+    "prompt": "이 설계는 트레이드오프 분석이 필요해 보여.",
+    "lang": "ko",
+    "expected": "architecture"
+  },
+  {
+    "prompt": "Make a plan for migrating the auth service to the new provider.",
+    "lang": "en",
+    "expected": "plan"
+  },
+  {
+    "prompt": "Break down this feature into a task breakdown before we start building.",
+    "lang": "en",
+    "expected": "plan"
+  },
+  {
+    "prompt": "Please analyze requirements for the new billing dashboard first.",
+    "lang": "en",
+    "expected": "plan"
+  },
+  {
+    "prompt": "이번 마이그레이션 계획 세워줘.",
+    "lang": "ko",
+    "expected": "plan"
+  },
+  {
+    "prompt": "이 기능 요구사항 정리해줘, 개발 들어가기 전에.",
+    "lang": "ko",
+    "expected": "plan"
+  },
+  {
+    "prompt": "새 대시보드 작업 분해 좀 해줘.",
+    "lang": "ko",
+    "expected": "plan"
+  },
+  {
+    "prompt": "Review my code before I open the PR.",
+    "lang": "en",
+    "expected": "review"
+  },
+  {
+    "prompt": "Please run a security audit on the payment module.",
+    "lang": "en",
+    "expected": "review"
+  },
+  {
+    "prompt": "Check my code for the new caching layer, something feels off.",
+    "lang": "en",
+    "expected": "review"
+  },
+  {
+    "prompt": "이 PR 리뷰해줘.",
+    "lang": "ko",
+    "expected": "review"
+  },
+  {
+    "prompt": "결제 모듈 보안 감사 좀 해줘.",
+    "lang": "ko",
+    "expected": "review"
+  },
+  {
+    "prompt": "이 코드 한번 봐줘, 이상한 부분 있는지.",
+    "lang": "ko",
+    "expected": "review"
+  },
+  {
+    "prompt": "Run deepsec on this repo before we merge.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "Kick off a deepsec pr review for this branch.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "We should scan repo with deepsec after the dependency bump.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "이 레포 딥섹 스캔 돌려줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "이 브랜치 딥섹 PR 리뷰 해줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "머지 전에 딥섹 실행해줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "The login page is broken after the last deploy, please debug this.",
+    "lang": "en",
+    "expected": "debug"
+  },
+  {
+    "prompt": "Please fix the crash happening on checkout.",
+    "lang": "en",
+    "expected": "debug"
+  },
+  {
+    "prompt": "Find the bug causing duplicate emails to send.",
+    "lang": "en",
+    "expected": "debug"
+  },
+  {
+    "prompt": "로그인 화면이 배포 후에 깨졌어, 고쳐줘.",
+    "lang": "ko",
+    "expected": "debug"
+  },
+  {
+    "prompt": "체크아웃에서 계속 에러나, 버그 좀 찾아줘.",
+    "lang": "ko",
+    "expected": "debug"
+  },
+  {
+    "prompt": "이 API 호출이 자꾸 안 돼, 원인 좀 봐줘.",
+    "lang": "ko",
+    "expected": "debug"
+  },
+  {
+    "prompt": "Let's brainstorm a few ideas for the onboarding redesign.",
+    "lang": "en",
+    "expected": "brainstorm"
+  },
+  {
+    "prompt": "Help me ideate on notification strategies for churned users.",
+    "lang": "en",
+    "expected": "brainstorm"
+  },
+  {
+    "prompt": "What if we explored a completely different pricing model?",
+    "lang": "en",
+    "expected": "brainstorm",
+    "note": "probe: 'what if' is also an informationalPatterns entry, so this may be self-suppressed even though it is a genuine brainstorm request"
+  },
+  {
+    "prompt": "새 온보딩 화면 아이디어 좀 줘봐.",
+    "lang": "ko",
+    "expected": "brainstorm"
+  },
+  {
+    "prompt": "알림 전략 관련해서 같이 생각해보자.",
+    "lang": "ko",
+    "expected": "brainstorm"
+  },
+  {
+    "prompt": "가격 모델을 완전히 다르게 하면 어떻게 하면 좋을까 구상해보자.",
+    "lang": "ko",
+    "expected": "brainstorm",
+    "note": "probe: '어떻게 하면 좋을까' contains '하면 좋을', also an informationalPatterns.ko entry — may self-suppress"
+  },
+  {
+    "prompt": "Walk me through fixing this migration one step at a time.",
+    "lang": "en",
+    "expected": "work"
+  },
+  {
+    "prompt": "Let's do this step by step, guide me through each change.",
+    "lang": "en",
+    "expected": "work"
+  },
+  {
+    "prompt": "Switch to manual mode and go one by one through these files.",
+    "lang": "en",
+    "expected": "work"
+  },
+  {
+    "prompt": "이 작업 단계별로 진행해줘.",
+    "lang": "ko",
+    "expected": "work"
+  },
+  {
+    "prompt": "파일들 하나씩 해줘, 한번에 말고.",
+    "lang": "ko",
+    "expected": "work"
+  },
+  {
+    "prompt": "차근차근 해줘, 급하지 않아.",
+    "lang": "ko",
+    "expected": "work"
+  },
+  {
+    "prompt": "Let's bootstrap a new project for the internal admin tool.",
+    "lang": "en",
+    "expected": "deepinit"
+  },
+  {
+    "prompt": "Please setup project scaffolding for the mobile app repo.",
+    "lang": "en",
+    "expected": "deepinit"
+  },
+  {
+    "prompt": "Initialize this repo with our standard harness before we start coding.",
+    "lang": "en",
+    "expected": "deepinit"
+  },
+  {
+    "prompt": "새 프로젝트 셋업해줘.",
+    "lang": "ko",
+    "expected": "deepinit"
+  },
+  {
+    "prompt": "이 레포 프로젝트 초기화해줘.",
+    "lang": "ko",
+    "expected": "deepinit"
+  },
+  {
+    "prompt": "관리자 도구용 새 프로젝트 만들어줘.",
+    "lang": "ko",
+    "expected": "deepinit"
+  },
+  {
+    "prompt": "Help me resolve this merge conflict on the release branch.",
+    "lang": "en",
+    "expected": "scm"
+  },
+  {
+    "prompt": "I need to rebase my branch onto main before opening the PR.",
+    "lang": "en",
+    "expected": "scm"
+  },
+  {
+    "prompt": "Let's set up a worktree for the hotfix branch.",
+    "lang": "en",
+    "expected": "scm"
+  },
+  {
+    "prompt": "이거 커밋해줘, 메시지는 컨벤셔널로.",
+    "lang": "ko",
+    "expected": "scm"
+  },
+  {
+    "prompt": "머지 충돌 해결 좀 도와줘.",
+    "lang": "ko",
+    "expected": "scm"
+  },
+  {
+    "prompt": "이 브랜치 리베이스해줘.",
+    "lang": "ko",
+    "expected": "scm"
+  },
+  {
+    "prompt": "Keep going until this migration is fully done, don't stop halfway.",
+    "lang": "en",
+    "expected": "ralph"
+  },
+  {
+    "prompt": "Run this to completion, see it through even if a test fails once.",
+    "lang": "en",
+    "expected": "ralph"
+  },
+  {
+    "prompt": "Finish everything on this ticket before you stop.",
+    "lang": "en",
+    "expected": "ralph"
+  },
+  {
+    "prompt": "이 작업 끝까지 해줘, 멈추지마.",
+    "lang": "ko",
+    "expected": "ralph"
+  },
+  {
+    "prompt": "테스트 다 통과할때까지 계속해줘.",
+    "lang": "ko",
+    "expected": "ralph"
+  },
+  {
+    "prompt": "랄프로 이 리팩토링 끝장내줘.",
+    "lang": "ko",
+    "expected": "ralph"
+  },
+  {
+    "prompt": "Design a landing page for the new product launch.",
+    "lang": "en",
+    "expected": "design"
+  },
+  {
+    "prompt": "Let's pick a color palette and typography for the dashboard redesign.",
+    "lang": "en",
+    "expected": "design"
+  },
+  {
+    "prompt": "Build a wireframe for the onboarding flow before we code it.",
+    "lang": "en",
+    "expected": "design"
+  },
+  {
+    "prompt": "이 제품 런칭용 랜딩페이지 디자인해줘.",
+    "lang": "ko",
+    "expected": "design"
+  },
+  {
+    "prompt": "대시보드 색상 팔레트 정해줘.",
+    "lang": "ko",
+    "expected": "design"
+  },
+  {
+    "prompt": "온보딩 화면 UI 디자인 좀 만들어줘.",
+    "lang": "ko",
+    "expected": "design"
+  },
+  {
+    "prompt": "Verify docs against the current API before we ship this release.",
+    "lang": "en",
+    "expected": "docs"
+  },
+  {
+    "prompt": "Our documentation is stale, let's sync docs with the latest schema changes.",
+    "lang": "en",
+    "expected": "docs"
+  },
+  {
+    "prompt": "Check docs for any broken links after the restructuring.",
+    "lang": "en",
+    "expected": "docs"
+  },
+  {
+    "prompt": "릴리즈 전에 문서 검증해줘.",
+    "lang": "ko",
+    "expected": "docs"
+  },
+  {
+    "prompt": "이 API 변경 반영해서 문서 동기화해줘.",
+    "lang": "ko",
+    "expected": "docs"
+  },
+  {
+    "prompt": "오래된 문서 있는지 점검해줘.",
+    "lang": "ko",
+    "expected": "docs"
+  },
+  {
+    "prompt": "Give me a recap of everything I worked on today.",
+    "lang": "en",
+    "expected": "recap"
+  },
+  {
+    "prompt": "Do a quick recap of this week's PRs before standup.",
+    "lang": "en",
+    "expected": "recap"
+  },
+  {
+    "prompt": "I want a recap of yesterday's debugging session.",
+    "lang": "en",
+    "expected": "recap"
+  },
+  {
+    "prompt": "오늘 작업 리캡 좀 해줘.",
+    "lang": "ko",
+    "expected": "recap"
+  },
+  {
+    "prompt": "이번 주 PR들 리캡해줘.",
+    "lang": "ko",
+    "expected": "recap"
+  },
+  {
+    "prompt": "어제 진행한 디버깅 작업 리캡해줘.",
+    "lang": "ko",
+    "expected": "recap"
+  },
+  {
+    "prompt": "Make a video walking through this feature for the release notes.",
+    "lang": "en",
+    "expected": "video"
+  },
+  {
+    "prompt": "Turn this into a video for the marketing team.",
+    "lang": "en",
+    "expected": "video"
+  },
+  {
+    "prompt": "Create a demo video showing the new checkout flow.",
+    "lang": "en",
+    "expected": "video"
+  },
+  {
+    "prompt": "이 기능 설명 영상 만들어줘.",
+    "lang": "ko",
+    "expected": "video"
+  },
+  {
+    "prompt": "새 결제 플로우 데모 영상 좀 만들어줘.",
+    "lang": "ko",
+    "expected": "video"
+  },
+  {
+    "prompt": "이 README를 영상으로 만들어줘.",
+    "lang": "ko",
+    "expected": "video"
+  },
+  {
+    "prompt": "What does the ultrawork workflow do exactly?",
+    "lang": "en",
+    "expected": null,
+    "note": "informational question about the workflow, not a run request"
+  },
+  {
+    "prompt": "How does ralph decide when to stop?",
+    "lang": "en",
+    "expected": null,
+    "note": "informational question about ralph's design"
+  },
+  {
+    "prompt": "Why is ultrawork triggering here again?",
+    "lang": "en",
+    "expected": null,
+    "note": "meta-discussion about a false trigger, not a request"
+  },
+  {
+    "prompt": "랄프랑 울트라워크 차이가 뭐야?",
+    "lang": "ko",
+    "expected": null,
+    "note": "comparison question between two workflows"
+  },
+  {
+    "prompt": "왜 자꾸 랄프가 트리거되는거야?",
+    "lang": "ko",
+    "expected": null,
+    "note": "meta-discussion about why ralph keeps firing"
+  },
+  {
+    "prompt": "Is there anything worth comparing between orchestrate and ultrawork?",
+    "lang": "en",
+    "expected": null,
+    "note": "analytical comparison question"
+  },
+  {
+    "prompt": "I read the ralph.md file to understand the workflow.",
+    "lang": "en",
+    "expected": null,
+    "note": "artifact reference (file name), not a run request"
+  },
+  {
+    "prompt": "Use oma ralph:verify to check state after the merge.",
+    "lang": "en",
+    "expected": null,
+    "note": "CLI subcommand artifact reference"
+  },
+  {
+    "prompt": ".agents/workflows/ralph 파일 구조를 바꾸자.",
+    "lang": "ko",
+    "expected": null,
+    "note": "path-segment artifact reference"
+  },
+  {
+    "prompt": "Check ralph.exec-tier before editing checkpoints.",
+    "lang": "en",
+    "expected": null,
+    "note": "property/config artifact reference"
+  },
+  {
+    "prompt": "The user quoted `ultrawork` inline in the ticket description.",
+    "lang": "en",
+    "expected": null,
+    "note": "inline code / quoted mention should be stripped before matching"
+  },
+  {
+    "prompt": "```\norchestrate\n```\nthat's just leftover text in the ticket.",
+    "lang": "en",
+    "expected": null,
+    "note": "fenced code block should be stripped before matching"
+  },
+  {
+    "prompt": "티켓에 `디버그`라는 단어가 그대로 있었어.",
+    "lang": "ko",
+    "expected": null,
+    "note": "inline code / quoted mention should be stripped before matching"
+  },
+  {
+    "prompt": "What is the review workflow supposed to check for?",
+    "lang": "en",
+    "expected": null,
+    "note": "informational question, 'what is' pattern near the keyword"
+  },
+  {
+    "prompt": "What is the security workflow supposed to scan?",
+    "lang": "en",
+    "expected": null,
+    "note": "informational question, 'what is' pattern near the keyword"
+  },
+  {
+    "prompt": "시큐리티 워크플로우가 정확히 뭘 하는지 설명해줘.",
+    "lang": "ko",
+    "expected": null,
+    "note": "informational request ('설명해') near the keyword"
+  },
+  {
+    "prompt": "The debug logs show a timeout in the payment service.",
+    "lang": "en",
+    "expected": null,
+    "note": "false-fire probe: 'debug' used as a noun in 'debug logs', not a request to the agent"
+  },
+  {
+    "prompt": "I fixed the merge conflict issue we discussed yesterday.",
+    "lang": "en",
+    "expected": null,
+    "note": "false-fire probe: past-tense narrative containing 'merge conflict'"
+  },
+  {
+    "prompt": "The new intern is working through onboarding steps one by one.",
+    "lang": "en",
+    "expected": null,
+    "note": "false-fire probe: 'one by one' used descriptively, not as a request"
+  },
+  {
+    "prompt": "그건 어제 이미 커밋했어.",
+    "lang": "ko",
+    "expected": null,
+    "note": "false-fire probe: past-tense narrative containing bare '커밋'"
+  },
+  {
+    "prompt": "This PR review took longer than expected due to flaky CI.",
+    "lang": "en",
+    "expected": null,
+    "note": "false-fire probe: past-tense narrative containing 'review'"
+  },
+  {
+    "prompt": "그 디자인 시안은 어제 이미 확정됐어.",
+    "lang": "ko",
+    "expected": null,
+    "note": "false-fire probe: past-tense narrative containing bare '디자인'"
+  },
+  {
+    "prompt": "oma agent:spawn brainstorm for the new landing page",
+    "lang": "en",
+    "expected": null,
+    "note": "CLI invocation guard: bare oma CLI form should suppress all workflows"
+  },
+  {
+    "prompt": "codex exec --workflow ralph now",
+    "lang": "en",
+    "expected": null,
+    "note": "CLI invocation guard: host-CLI verb form should suppress all workflows"
+  },
+  {
+    "prompt": "/oma:brainstorm please",
+    "lang": "en",
+    "expected": null,
+    "note": "slash-command guard: leading slash is treated as a native slash command, not keyword detection"
+  },
+  {
+    "prompt": "/debug something is broken",
+    "lang": "en",
+    "expected": null,
+    "note": "slash-command guard: leading slash short-circuits keyword detection entirely"
+  },
+  {
+    "prompt": "/review 이 코드 봐줘",
+    "lang": "ko",
+    "expected": null,
+    "note": "slash-command guard: leading slash short-circuits keyword detection entirely"
+  },
+  {
+    "prompt": "She said \"let's brainstorm this later\" but we're not ready yet.",
+    "lang": "en",
+    "expected": null,
+    "note": "quoted-string mention should be stripped before matching"
+  },
+  {
+    "prompt": "그는 \"단계별로 해줘\"라고 말했지만 아직 결정된 건 아니야.",
+    "lang": "ko",
+    "expected": null,
+    "note": "quoted-string mention should be stripped before matching"
+  },
+  {
+    "prompt": "What's the weather like today?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Can you explain how JWT works?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Thanks, that looks great!",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Let's grab lunch after this call.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "How do I install bun on macOS?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "What's the capital of France?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "I appreciate your help with this.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Please summarize this article for me.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Convert this CSV to a JSON array.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "What's your favorite programming language?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Can you translate this sentence to Spanish?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Tell me a joke about databases.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "What time zone are you in?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "I'm heading out for the day, see you tomorrow.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Explain the difference between var, let, and const.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "How many days are in February this year?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Add a comment explaining this function.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "What does HTTP status 429 mean?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Rename this variable to something clearer.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Print the current date in ISO format.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "What's a good name for this new microservice?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Can you double check this regex is correct?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "I think we should upgrade Node to the LTS version.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "This test is flaky, any idea why offhand?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "오늘 날씨 어때?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "점심 뭐 먹을까?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "고마워, 도움 많이 됐어.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "JWT가 정확히 뭔지 설명해줘.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "이 변수 이름 좀 더 명확하게 바꿔줘.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "파이썬이랑 자바 중에 뭐가 더 배우기 쉬워?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "이 함수에 주석 좀 달아줘.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "지금 몇 시야?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "이 CSV를 JSON으로 변환해줘.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "오늘 할 일 없으면 좀 쉬어도 될까?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "이 문장 영어로 번역해줘.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "너 좋아하는 프로그래밍 언어 있어?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "HTTP 429 상태코드가 무슨 뜻이야?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "내일 회의 몇 시에 시작해?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "이 라이브러리 버전 좀 확인해줘.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "지금 날짜 ISO 포맷으로 출력해줘.",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "그 워크플로우 자체는 어떻게 동작해?",
+    "lang": "ko",
+    "expected": null
+  },
+  {
+    "prompt": "그 랄프 코드를 한번 깊게 봐볼래?",
+    "lang": "ko",
+    "expected": null,
+    "note": "meta-discussion about ralph; must stay suppressed by '깊게 봐'/'코드를 한번' after '한번 봐' removal"
+  },
+  {
+    "prompt": "What if the detector fires twice?",
+    "lang": "en",
+    "expected": null,
+    "note": "specificity-round hard negative: meta question about the detector itself, using the same 'what if' phrasing brainstorm now relies on — must stay suppressed via the 'detector' informationalPattern even though 'what if' was removed from informationalPatterns.*"
+  },
+  {
+    "prompt": "그 리뷰 워크플로우 자체가 뭐야?",
+    "lang": "ko",
+    "expected": null,
+    "note": "meta question about the review workflow itself ('그 ... 워크플로우 자체'), not a request to run review"
+  },
+  {
+    "prompt": "이 워크플로우가 어떻게 동작하는지 설명해줘.",
+    "lang": "ko",
+    "expected": null,
+    "note": "narrowed informationalPatterns.ko regression check: bare '어떻게' was replaced with specific forms ('어떻게 동작', '어떻게 하는지', ...) after it collided with brainstorm's own '어떻게 하면 좋을까' keyword — this genuine 'how does it work' meta-question must still be suppressed by '어떻게 동작'"
+  },
+  {
+    "prompt": "What is the security workflow for, out of curiosity? Separately and unrelated to that question, please review this PR today.",
+    "lang": "en",
+    "expected": "review",
+    "note": "specificity-ranking policy check: the more specific 'deepsec pr review' match is suppressed (informational window around 'what is'), but a separate, unsuppressed 'review this' request later in the same prompt is NOT suppressed — a suppressed specific candidate must not block a different, genuine generic request from firing"
+  },
+  {
+    "prompt": "둘 다 해줘. 그리고 sbt 사용 이력에 공연들이 다 나열되고 바로 연결되면 좋겠는데.",
+    "lang": "ko",
+    "expected": null,
+    "note": "issue #672 repro: ralph's bare '다 해' keyword matched '둘 다 해줘' ('do both'), which carries no completion/exhaustive intent — CJK keywords match as substrings with no word boundary, so 2-syllable '다 해' was a substring of ordinary conversational Korean. Removed from ralph.keywords.ko; the compound forms ('다 끝내', '다 끝내줘') still cover the real intent"
+  },
+  {
+    "prompt": "이거 다 해봤어.",
+    "lang": "ko",
+    "expected": null,
+    "note": "issue #672: past-tense narrative '다 해봤어' ('already tried all of it') must not activate ralph"
+  },
+  {
+    "prompt": "밥 다 해놨어.",
+    "lang": "ko",
+    "expected": null,
+    "note": "issue #672: '다 해놨어' in a fully non-technical sentence must not activate ralph"
+  },
+  {
+    "prompt": "이 얘기 끝까지 들어보자.",
+    "lang": "ko",
+    "expected": null,
+    "note": "issue #672 (secondary, unconfirmed in the report but reproduced): bare '끝까지' matched 'hear me out to the end'. Removed from ralph.keywords.ko — the already-present '끝까지 해' / '끝까지 해줘' require the 'do' verb stem and still cover genuine requests"
+  },
+  {
+    "prompt": "이 작업 끝까지 해줘, 멈추지 말고.",
+    "lang": "ko",
+    "expected": "ralph",
+    "note": "issue #672 counter-check: removing bare '끝까지' and '다 해' must NOT weaken genuine ralph activation — '끝까지 해' and '멈추지 말고' still match"
+  },
+  {
+    "prompt": "이 마이그레이션 한번에 다 해줘.",
+    "lang": "ko",
+    "expected": "orchestrate",
+    "note": "issue #672 side effect: orchestrate's '한번에 다 해줘' was previously shadowed by ralph's shorter '다 해' substring. With '다 해' gone, the specific orchestrate keyword wins"
+  },
+  {
+    "prompt": "Does this work on Windows?",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: bare 'work' fired the persistent work workflow on a yes/no question"
+  },
+  {
+    "prompt": "make the retry logic work with the new queue",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: 'work' as an ordinary verb must not trigger the work workflow"
+  },
+  {
+    "prompt": "implement the login feature",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: a single feature is not multi-agent orchestration ('the'/'feature' dropped from the build pattern)"
+  },
+  {
+    "prompt": "create the settings feature for admins",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: same build-pattern narrowing as 'implement the login feature'"
+  },
+  {
+    "prompt": "run the tests in parallel",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: bare 'parallel' fired orchestrate on a test-runner request"
+  },
+  {
+    "prompt": "automate the release notes",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: 'automate X' asks for automation tooling, not orchestration (bare 'automate' removed)"
+  },
+  {
+    "prompt": "keep going",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: a bare resume phrase fired persistent ralph"
+  },
+  {
+    "prompt": "carry on",
+    "lang": "en",
+    "expected": null,
+    "note": "persistent-precision regression: a bare resume phrase fired persistent ralph"
+  },
+  {
+    "prompt": "Can you keep going until the tests pass?",
+    "lang": "en",
+    "expected": null,
+    "note": "question gate: a '?'-terminated line suppresses natural-language persistent matches"
+  },
+  {
+    "prompt": "계속해",
+    "lang": "ko",
+    "expected": null,
+    "note": "persistent-precision regression: '계속해' (continue) is how users resume after an interruption, not a ralph request"
+  },
+  {
+    "prompt": "fix the network timeout",
+    "lang": "ko",
+    "expected": null,
+    "note": "CJK-config regression: under language: ko ASCII keywords lost their word boundaries and 'network' fired work"
+  },
+  {
+    "prompt": "network 설정 고쳐줘",
+    "lang": "ko",
+    "expected": "debug",
+    "note": "CJK-config regression: was work via 'network' under language: ko; the genuine '고쳐줘' fix request is debug"
+  },
+  {
+    "prompt": "preview 페이지 레이아웃 고쳐줘",
+    "lang": "ko",
+    "expected": "debug",
+    "note": "CJK-config regression: 'preview' fired review under language: ko"
+  },
+  {
+    "prompt": "explanation 문구 수정해줘",
+    "lang": "ko",
+    "expected": "debug",
+    "note": "CJK-config regression: 'explanation' fired plan under language: ko"
+  },
+  {
+    "prompt": "Switch to work mode for this refactor.",
+    "lang": "en",
+    "expected": "work",
+    "note": "explicit work invocation ('work mode') — activates persistent mode"
+  },
+  {
+    "prompt": "ultrawork로 해줄래?",
+    "lang": "ko",
+    "expected": "ultrawork",
+    "note": "explicit invocation phrased as a polite question still fires (question gate applies only to natural-language matches)"
+  },
+  {
+    "prompt": "Build me an app for tracking expenses.",
+    "lang": "en",
+    "expected": "orchestrate",
+    "note": "build pattern still routes new-product requests ('build me an app')"
+  },
+  {
+    "prompt": "Orchestrate this refactor step by step.",
+    "lang": "en",
+    "expected": "orchestrate",
+    "note": "explicit invocation outranks the longer natural-language 'step by step' (work)"
+  },
+  {
+    "prompt": "Run a security scan on this repository.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "Run Cisco Skill Scanner against this skill package.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "Run Cisco MCP Scanner against this MCP server.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "Run Cisco AI Deep SAST on this source tree.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "Run ARTEX against our isolated test deployment.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "Validate security findings from this scan.",
+    "lang": "en",
+    "expected": "security"
+  },
+  {
+    "prompt": "이 레포 보안 스캔 해줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "시스코 스킬 스캐너 실행해줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "시스코 MCP 스캐너 실행해줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "딥 SAST 실행해줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "ARTEX 실행해서 테스트 사이트 검사해줘.",
+    "lang": "ko",
+    "expected": "security"
+  },
+  {
+    "prompt": "What does the security workflow do?",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Compare Cisco Skill Scanner and ARTEX.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Explain Cloudflare security-audit-skill.",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "Please run /deepsec",
+    "lang": "en",
+    "expected": null
+  },
+  {
+    "prompt": "시큐리티 워크플로우가 어떻게 동작하는지 설명해줘.",
+    "lang": "ko",
+    "expected": null
+  }
+]

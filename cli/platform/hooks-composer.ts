@@ -1,0 +1,250 @@
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { atomicWriteFileSync } from "../utils/safe-write.js";
+import { withQwenHookEvents } from "../vendors/qwen/hooks.js";
+import { ensureFeatureFlags } from "./hooks-composer/feature-flags.js";
+import {
+  buildHookCmd,
+  buildOmaHookCmd,
+  deriveHookName,
+  mergeMatchers,
+  OMA_HOOK_WRAPPER_FILENAME,
+  shellQuote,
+} from "./hooks-composer/hook-command.js";
+import { generateOmaHookWrapper } from "./hooks-composer/oma-hook-wrapper.js";
+import {
+  copyHookScripts,
+  requiredVariantScripts,
+} from "./hooks-composer/script-copy.js";
+import { mergeIntoSettings } from "./hooks-composer/settings-merge.js";
+import type { HookVariant } from "./hooks-composer/variant-types.js";
+import { safeGetInstallMode } from "./install-context.js";
+
+export { ensureFeatureFlags } from "./hooks-composer/feature-flags.js";
+export {
+  buildOmaHookCmd,
+  mergeMatchers,
+} from "./hooks-composer/hook-command.js";
+export { generateOmaHookWrapper } from "./hooks-composer/oma-hook-wrapper.js";
+export {
+  copyHookScripts,
+  requiredVariantScripts,
+} from "./hooks-composer/script-copy.js";
+export {
+  isOmaManagedHookGroup,
+  mergeHookGroups,
+  mergeIntoSettings,
+} from "./hooks-composer/settings-merge.js";
+export type {
+  HookEvent,
+  HookVariant,
+} from "./hooks-composer/variant-types.js";
+
+/** Seconds on top of the handler budgets for oma startup and the stdin read. */
+export const OMA_HOOK_STARTUP_MARGIN_S = 5;
+
+/**
+ * Vendor-side timeout (seconds) for one settings entry running a whole handler
+ * chain in-process: every handler's own budget plus the startup margin. It
+ * must exceed the chain so `oma hook run` — not the vendor — stops a slow
+ * handler and records why (the Stop chain carries the persistent-mode gate:
+ * gate 25s < handler 30s < vendor 40s, see GATE_TIMEOUT_MS).
+ */
+export function chainTimeoutSeconds(
+  configs: ReadonlyArray<{ timeout: number }>,
+): number {
+  return (
+    configs.reduce((sum, c) => sum + c.timeout, 0) + OMA_HOOK_STARTUP_MARGIN_S
+  );
+}
+
+/**
+ * Install hooks for any vendor using its variant config from .agents/hooks/variants/.
+ * Reads the variant JSON, copies core hooks, generates settings entries.
+ *
+ * ### Event hook strategy (design 019 §T6)
+ *
+ * For each event in `variant.events`:
+ *   - If ALL configs in that event reference `hud.ts` only:
+ *       Keep the current `bun <hookDir>/hud.ts` command (hot-path display,
+ *       excluded from oma hook per T1-c).
+ *   - Otherwise (at least one non-hud handler):
+ *       Emit ONE settings entry whose command is `<oma-hook.sh> --vendor <v>
+ *       --event <e> [--matcher <m>]`.  oma runs the WHOLE handler chain
+ *       in-process — no longer one entry per handler script.
+ *       Hud-only configs within mixed events are intentionally dropped from
+ *       the settings entry (display is a statusLine concern, not a handler).
+ *
+ * ### copyHookScripts copies ONLY the variant's runtime-required scripts
+ * `copyHookScripts` materializes just what the hookDir executes or reads at
+ * runtime (hud.ts for statusLine/hud-only events, filter-test-output.sh for
+ * test-filter — see requiredVariantScripts). Handler .ts files run in-process
+ * inside `oma hook run` and are NOT copied; the pi bridge, which spawns them as
+ * subprocesses, gets the full set via its own composer (pi-extension-composer).
+ * We no longer call `patchVendorHookTypes` or `patchVendorDetection` because
+ * vendor identity is now a `--vendor` CLI argument, not a runtime detection.
+ *
+ * ### ONE wrapper per vendor
+ * A single `oma-hook.sh` is written to `hookDir`. It resolves the oma binary
+ * ($OMA_BIN → PATH → known install dirs → exit 0 fail-open) and `exec`s
+ * `oma hook "$@"`. The script is identical on every machine — no install-time
+ * path is baked in, so a committed hook dir carries nobody's home directory.
+ */
+export function installHooksFromVariant(
+  sourceDir: string,
+  targetDir: string,
+  variant: HookVariant,
+): void {
+  variant = withQwenHookEvents(variant);
+  const globalHome = safeGetInstallMode() === "global" ? sourceDir : undefined;
+  const commandVariant = globalHome
+    ? {
+        ...variant,
+        projectDirEnv: null,
+        hookDir: join(targetDir, variant.hookDir),
+      }
+    : variant;
+  const bindHome = (command: string) =>
+    globalHome ? `OMA_HOME=${shellQuote(globalHome)} ${command}` : command;
+  // 1. Materialize ONLY the scripts this variant executes/reads from hookDir
+  //    (hud.ts, filter-test-output.sh — see requiredVariantScripts). The
+  //    unchanged copies recorded by OMA may be replaced or pruned; user files
+  //    and legacy files without ownership evidence are preserved.
+  const hooksDest = join(targetDir, variant.hookDir);
+  // Standalone scripts have a dedicated namespace, so a legacy HUD can be
+  // upgraded without overwriting an ambiguous file in the shared hook dir.
+  copyHookScripts(
+    sourceDir,
+    join(hooksDest, "oma"),
+    requiredVariantScripts(variant),
+    { ownedNamespace: true },
+  );
+
+  // 2. Write the single oma-hook wrapper (one per vendor hookDir).
+  const wrapperPath = join(hooksDest, OMA_HOOK_WRAPPER_FILENAME);
+  atomicWriteFileSync(wrapperPath, generateOmaHookWrapper(globalHome), {
+    mode: 0o755,
+  });
+
+  // 3. Build hook entries from events.
+  // biome-ignore lint/suspicious/noExplicitAny: hook config varies by vendor
+  const hookEntries: Record<string, any> = {};
+  if (variant.vendor === "qwen") {
+    // Remove registrations from the retired Qwen-only intelligence handler.
+    hookEntries.SubagentStart = [];
+    hookEntries.PostToolUseFailure = [];
+  }
+  for (const [eventName, rawConfig] of Object.entries(variant.events)) {
+    const configs = Array.isArray(rawConfig) ? rawConfig : [rawConfig];
+    if (configs.length === 0) continue;
+
+    // Determine whether ALL hooks in this event are hud-only (display, not handlers).
+    const nonHudConfigs = configs.filter((c) => c.hook !== "hud.ts");
+    const allHud = nonHudConfigs.length === 0;
+
+    // biome-ignore lint/suspicious/noExplicitAny: hook entry shape varies
+    let entry: any;
+    // One settings entry serves the whole chain, so its matcher must admit
+    // every tool any handler in the chain wants to see: union the distinct
+    // per-handler matchers (`Bash` + `Grep|Glob` → `Bash|Grep|Glob`). Each
+    // handler still filters on toolName itself, so widening is safe.
+    const matcher = mergeMatchers(configs.map((c) => c.matcher));
+
+    if (allHud) {
+      // Hud-only event — keep the current bun path (T1-c: statusLine/hud stays
+      // on its current mechanism).
+      const hooks = configs.map((c) => ({
+        name: deriveHookName(c.hook),
+        type: "command",
+        command: bindHome(buildHookCmd(commandVariant, c.hook)),
+        timeout: c.timeout,
+      }));
+      entry = { hooks };
+      if (matcher) entry.matcher = matcher;
+    } else {
+      // Handler event — route through oma hook (one entry for the whole chain).
+      const handlerTimeout = chainTimeoutSeconds(nonHudConfigs);
+      const omaHookCmd = buildOmaHookCmd(commandVariant, eventName, matcher);
+      if (variant.flatHookEntries) {
+        // Flat-entry vendors (Cursor): the event array holds the hook object
+        // directly — nested {matcher, hooks: [...]} groups do not fire there.
+        entry = { command: omaHookCmd, timeout: handlerTimeout };
+        if (matcher) entry.matcher = matcher;
+        // Cursor `stop` caps auto-resubmits via `loop_limit` (null = uncapped).
+        // A config with `loopLimit` explicitly set (incl. null) forwards it.
+        const loopLimitConfig = configs.find((c) => c.loopLimit !== undefined);
+        if (loopLimitConfig) entry.loop_limit = loopLimitConfig.loopLimit;
+      } else {
+        entry = {
+          hooks: [
+            {
+              name: `oma-hook-${eventName}`,
+              type: "command",
+              command: omaHookCmd,
+              timeout: handlerTimeout,
+            },
+          ],
+        };
+        if (matcher) entry.matcher = matcher;
+      }
+    }
+
+    hookEntries[eventName] = [entry];
+  }
+
+  // 4. Build extra settings (statusLine, permissions, etc.).
+  //    statusLine keeps the current bun/hud path (T1-c: not routed via oma hook).
+  // biome-ignore lint/suspicious/noExplicitAny: extra settings are dynamic
+  const extra: Record<string, any> = {};
+  if (variant.statusLine) {
+    const statusLineEntry = {
+      type: "command",
+      command: bindHome(buildHookCmd(commandVariant, variant.statusLine.hook)),
+    };
+    if (variant.statusLineKey) {
+      // Qwen Code reads `ui.statusLine`; a root-level entry is ignored.
+      extra[variant.statusLineKey] = { statusLine: statusLineEntry };
+    } else {
+      extra.statusLine = statusLineEntry;
+    }
+  }
+  if (variant.extra) Object.assign(extra, variant.extra);
+
+  // 5. Merge into settings file (or write Grok-native hook file).
+  if (variant.vendor === "grok") {
+    // Grok discovers hooks from .grok/hooks/*.json files (directory-based).
+    // Write a single well-named file with the double-nested shape Grok expects.
+    const grokHookFile = join(targetDir, variant.settingsFile);
+    mkdirSync(dirname(grokHookFile), { recursive: true });
+    const grokPayload = { hooks: hookEntries };
+    atomicWriteFileSync(
+      grokHookFile,
+      `${JSON.stringify(grokPayload, null, 2)}\n`,
+    );
+  } else if (variant.skipSettingsMerge) {
+    // Kiro: the CLI reads hooks from .kiro/agents/oma-hooks.json (written by
+    // applyKiroOmaHooksAgent), not from settingsFile — merging hookEntries into
+    // .kiro/settings/cli.json would be dead config it never loads. The wrapper
+    // (step 2) and copied scripts still back the agent JSON's commands. Only
+    // `extra` (statusLine/permissions) is still merged, when the variant has any
+    // (Kiro has none today).
+    if (Object.keys(extra).length > 0) {
+      mergeIntoSettings(join(targetDir, variant.settingsFile), {}, extra);
+    }
+  } else {
+    mergeIntoSettings(
+      join(targetDir, variant.settingsFile),
+      hookEntries,
+      Object.keys(extra).length > 0 ? extra : undefined,
+    );
+  }
+
+  // 6. Vendor-specific feature flags (e.g., Codex config.toml).
+  if (variant.featureFlags) {
+    ensureFeatureFlags(
+      join(targetDir, variant.featureFlags.file),
+      variant.featureFlags.section,
+      variant.featureFlags.flags,
+    );
+  }
+}

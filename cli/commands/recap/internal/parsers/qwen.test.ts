@@ -1,0 +1,158 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  MemoryRawTurn,
+  MemoryRawTurnLoadResult,
+} from "../../../../types/memory.js";
+
+const tempHome = mkdtempSync(join(os.tmpdir(), "oma-qwen-home-"));
+
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  return { ...actual, homedir: () => tempHome };
+});
+
+const { getParsers } = await import("../registry.js");
+// import after mock so QWEN_BASE resolves to tempHome
+await import("./qwen.js");
+const parser = getParsers().find((p) => p.name === "qwen");
+
+function rawTurns(
+  result: MemoryRawTurn[] | MemoryRawTurnLoadResult | undefined,
+): MemoryRawTurn[] {
+  if (!result) return [];
+  return Array.isArray(result) ? result : result.turns;
+}
+
+describe("qwen parser", () => {
+  beforeEach(() => {
+    rmSync(join(tempHome, ".qwen"), { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    rmSync(join(tempHome, ".qwen"), { recursive: true, force: true });
+  });
+
+  it("returns false from detect when QWEN_BASE is missing", async () => {
+    expect(await parser?.detect()).toBe(false);
+  });
+
+  it("returns [] from parse when QWEN_BASE is missing", async () => {
+    const entries = await parser?.parse(0, Date.now() + 1_000_000);
+    expect(entries).toEqual([]);
+  });
+
+  it("parses user-assistant pairs within window and skips out-of-range", async () => {
+    const inRange = new Date("2026-04-01T10:00:00Z").getTime();
+    const outOfRange = new Date("2020-01-01T00:00:00Z").getTime();
+    const chatsDir = join(tempHome, ".qwen", "projects", "myproj", "chats");
+    mkdirSync(chatsDir, { recursive: true });
+    const lines = [
+      JSON.stringify({
+        type: "user",
+        timestamp: new Date(inRange).toISOString(),
+        sessionId: "sess-1",
+        cwd: "/home/me/myproj",
+        message: { parts: [{ text: "hello" }] },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        timestamp: new Date(inRange + 1000).toISOString(),
+        message: { parts: [{ text: "hi there" }] },
+      }),
+      JSON.stringify({
+        type: "user",
+        timestamp: new Date(outOfRange).toISOString(),
+        message: { parts: [{ text: "old prompt" }] },
+      }),
+      "not json",
+      "",
+    ];
+    const chatPath = join(chatsDir, "session1.jsonl");
+    writeFileSync(chatPath, lines.join("\n"));
+
+    const start = new Date("2026-03-01T00:00:00Z").getTime();
+    const end = new Date("2026-05-01T00:00:00Z").getTime();
+    const entries = (await parser?.parse(start, end)) ?? [];
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      tool: "qwen",
+      prompt: "hello",
+      response: "hi there",
+      project: "myproj",
+      sessionId: "sess-1",
+    });
+
+    const turns = rawTurns(await parser?.parseRaw?.(start, end));
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({
+      vendor: "qwen",
+      role: "user",
+      text: "hello",
+      sourcePath: chatPath,
+      vendorSessionId: "sess-1",
+      project: "myproj",
+      projectDir: "/home/me/myproj",
+    });
+    expect(turns[1]).toMatchObject({
+      role: "assistant",
+      text: "hi there",
+      sourcePath: chatPath,
+    });
+    expect(turns[1]?.projectDir).toBeUndefined();
+    expect(turns[0]?.idempotencyKey).toContain("qwen:sess-1");
+  });
+
+  it("preserves per-turn absolute cwd without inferring unknown scopes", async () => {
+    const ts = new Date("2026-05-29T00:00:00.000Z").getTime();
+    const chatsDir = join(
+      tempHome,
+      ".qwen",
+      "projects",
+      "shared-name",
+      "chats",
+    );
+    mkdirSync(chatsDir, { recursive: true });
+    writeFileSync(
+      join(chatsDir, "session.jsonl"),
+      [
+        "/workspace/a/shared-name",
+        "/workspace/b/shared-name",
+        "relative/shared-name",
+        undefined,
+      ]
+        .map((cwd, index) =>
+          JSON.stringify({
+            type: "user",
+            timestamp: new Date(ts + index).toISOString(),
+            cwd,
+            sessionId: "qwen-session",
+            message: { parts: [{ text: `prompt ${index}` }] },
+          }),
+        )
+        .join("\n"),
+    );
+
+    const turns = rawTurns(await parser?.parseRaw?.(ts, ts + 10_000));
+    expect(turns).toHaveLength(4);
+    expect(turns.map((turn) => turn.projectDir)).toEqual([
+      "/workspace/a/shared-name",
+      "/workspace/b/shared-name",
+      undefined,
+      undefined,
+    ]);
+    expect(turns.slice(0, 3).map((turn) => turn.project)).toEqual([
+      "shared-name",
+      "shared-name",
+      "shared-name",
+    ]);
+  });
+
+  it("detect returns true when QWEN_BASE exists", async () => {
+    mkdirSync(join(tempHome, ".qwen", "projects"), { recursive: true });
+    expect(await parser?.detect()).toBe(true);
+  });
+});

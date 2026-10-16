@@ -1,0 +1,408 @@
+// Hook router + merge — design 019, Section 2.
+// This module owns routing (vendor × event → handler chain) and merge rules.
+
+import * as codeIntelligenceGuard from "../../../.agents/hooks/core/code-intelligence-guard.js";
+import * as codeIntelligencePrimer from "../../../.agents/hooks/core/code-intelligence-primer.js";
+import { resolveProjectRoot } from "../../../.agents/hooks/core/fs-utils.js";
+import {
+  makeBlockOutput,
+  makePostToolBlockOutput,
+  makePreToolDenyOutput,
+  makePreToolOutput,
+  makePromptOutput,
+} from "../../../.agents/hooks/core/hook-output.js";
+import * as keywordDetector from "../../../.agents/hooks/core/keyword-detector.js";
+import * as persistentMode from "../../../.agents/hooks/core/persistent-mode.js";
+import * as refactorGuard from "../../../.agents/hooks/core/refactor-guard.js";
+import * as scmGuard from "../../../.agents/hooks/core/scm-guard.js";
+import * as skillInjector from "../../../.agents/hooks/core/skill-injector.js";
+import * as stateBoundary from "../../../.agents/hooks/core/state-boundary.js";
+import * as testFilter from "../../../.agents/hooks/core/test-filter.js";
+// Embedded variant route-tables. These JSON imports are INLINED into the bundle
+// by `bun build`, so the route config travels with the oma binary — it does NOT
+// depend on `<project>/.agents/hooks/variants/` existing (it never does in a
+// normal install; the installer only uses variants to generate vendor settings).
+import antigravityVariant from "../../../.agents/hooks/variants/antigravity.json" with {
+  type: "json",
+};
+import claudeVariant from "../../../.agents/hooks/variants/claude.json" with {
+  type: "json",
+};
+import codexVariant from "../../../.agents/hooks/variants/codex.json" with {
+  type: "json",
+};
+import commandcodeVariant from "../../../.agents/hooks/variants/commandcode.json" with {
+  type: "json",
+};
+import cursorVariant from "../../../.agents/hooks/variants/cursor.json" with {
+  type: "json",
+};
+import grokVariant from "../../../.agents/hooks/variants/grok.json" with {
+  type: "json",
+};
+import kimiVariant from "../../../.agents/hooks/variants/kimi.json" with {
+  type: "json",
+};
+import kiroVariant from "../../../.agents/hooks/variants/kiro.json" with {
+  type: "json",
+};
+import qwenVariant from "../../../.agents/hooks/variants/qwen.json" with {
+  type: "json",
+};
+import { withSelectedHookMemory } from "../../state/hook-memory.js";
+import type { VendorType } from "../../types/vendors.js";
+import { withQwenHookEvents } from "../../vendors/qwen/hooks.js";
+import { nativeEventToKind, normalizeInput } from "./adapters.js";
+import { resolveHookConfig } from "./hook-config.js";
+import type {
+  HandlerCtx,
+  HandlerResult,
+  HookInput,
+  HookRequest,
+  HookResponse,
+  Vendor,
+} from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Handler registry — maps handler id (variant JSON basename minus .ts) to run().
+// ---------------------------------------------------------------------------
+
+type RunFn = (
+  input: HookInput,
+  ctx: HandlerCtx,
+) => Promise<HandlerResult | null>;
+
+export const HANDLER_REGISTRY: Readonly<Record<string, RunFn>> = {
+  "keyword-detector": keywordDetector.run,
+  "skill-injector": skillInjector.run,
+  "code-intelligence-primer": codeIntelligencePrimer.run,
+  "serena-primer": codeIntelligencePrimer.run,
+  "state-boundary": stateBoundary.run,
+  "scm-guard": scmGuard.run,
+  "code-intelligence-guard": codeIntelligenceGuard.run,
+  "refactor-guard": refactorGuard.run,
+  "test-filter": testFilter.run,
+  "persistent-mode": persistentMode.run,
+};
+
+// ---------------------------------------------------------------------------
+// Default per-handler timeout — 5 seconds, matching the variant JSON default.
+// ---------------------------------------------------------------------------
+const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;
+
+// ---------------------------------------------------------------------------
+// Embedded variant route-tables — bundled at build time (see imports above).
+// ---------------------------------------------------------------------------
+
+interface HookEntry {
+  hook: string;
+  matcher?: string;
+  timeout?: number;
+}
+
+interface VariantJson {
+  vendor: string;
+  hookDir: string;
+  events: Record<string, HookEntry | HookEntry[]>;
+}
+
+/**
+ * Vendor → embedded variant config. Self-contained; no filesystem read.
+ *
+ * Exported as the canonical table of hook-model vendors `oma hook run` can
+ * dispatch for. Consumers (doctor wrapper checks, contract tests) derive
+ * vendor/hookDir lists from this table instead of keeping their own copies.
+ * Qwen's compatibility additions are shared with the settings composer.
+ * A variant JSON without an entry here is dead config — the installer would
+ * register its hooks but `oma hook run` would dispatch an empty chain (this is
+ * exactly how commandcode shipped broken). `vendor-wiring.test.ts` fails
+ * when this table and `.agents/hooks/variants/*.json` drift.
+ */
+// Exhaustive over hook vendors (VendorType): adding a vendor to VENDORS without
+// a variant route here is a compile error. `pi`/`opencode` use extension
+// composers, not settings-file variants, so they are intentionally absent.
+export const VARIANT_ROUTES: Readonly<Record<VendorType, VariantJson>> = {
+  antigravity: antigravityVariant as VariantJson,
+  claude: claudeVariant as VariantJson,
+  codex: codexVariant as VariantJson,
+  commandcode: commandcodeVariant as VariantJson,
+  cursor: cursorVariant as VariantJson,
+  grok: grokVariant as VariantJson,
+  kimi: kimiVariant as VariantJson,
+  kiro: kiroVariant as VariantJson,
+  qwen: withQwenHookEvents(qwenVariant) as VariantJson,
+};
+
+/**
+ * Name the prompt-kind context injection is emitted for. Session-start events
+ * (commandcode SessionStart / cursor sessionStart) name "SessionStart" so the
+ * hookSpecificOutput matches the vendor's actual event; all other prompt events
+ * are prompt-submit → "UserPromptSubmit".
+ */
+function promptHookEventName(nativeEvent: string): string {
+  return nativeEvent === "SessionStart" || nativeEvent === "sessionStart"
+    ? "SessionStart"
+    : "UserPromptSubmit";
+}
+
+/** Look up the embedded variant config for a vendor (null if unknown). */
+function loadVariant(vendor: Vendor): VariantJson | null {
+  // Vendor includes pi (extension-based, no settings variant) → undefined → null.
+  return VARIANT_ROUTES[vendor as VendorType] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Chain resolution — look up events[nativeEvent] in the variant JSON and
+// produce an ordered array of { runFn, timeoutMs } tuples.
+// ---------------------------------------------------------------------------
+
+interface ResolvedHandler {
+  id: string;
+  run: RunFn;
+  timeoutMs: number;
+}
+
+/**
+ * Normalize a variant timeout value to milliseconds.
+ * The schema defines timeout in integer seconds (hook-variant.schema.json).
+ * Only values ≥ 1000 are taken as already-milliseconds (legacy ms-authored
+ * variants, e.g. the removed Gemini one): the old `> 30 ⇒ ms` cut-off turned
+ * a 31–999 s budget into a few dozen milliseconds. Invalid → the default.
+ */
+export function toMs(timeout: number): number {
+  if (!Number.isFinite(timeout) || timeout <= 0) {
+    return DEFAULT_HANDLER_TIMEOUT_MS;
+  }
+  return timeout >= 1000 ? timeout : timeout * 1000;
+}
+
+function resolveChain(vendor: Vendor, nativeEvent: string): ResolvedHandler[] {
+  const variant = loadVariant(vendor);
+  if (!variant) {
+    process.stderr.write(
+      `[oma hook] warn: no embedded variant route-table for vendor="${vendor}" — empty chain\n`,
+    );
+    return [];
+  }
+
+  const entry = variant.events[nativeEvent];
+  if (!entry) return [];
+
+  const entries: HookEntry[] = Array.isArray(entry) ? entry : [entry];
+  const chain: ResolvedHandler[] = [];
+
+  for (const e of entries) {
+    const id = e.hook.replace(/\.ts$/, "");
+    const runFn = HANDLER_REGISTRY[id];
+    if (!runFn) {
+      process.stderr.write(
+        `[oma hook] warn: unknown handler id "${id}" in variant "${vendor}/${nativeEvent}" — skipping\n`,
+      );
+      continue;
+    }
+    const timeoutMs =
+      e.timeout !== undefined ? toMs(e.timeout) : DEFAULT_HANDLER_TIMEOUT_MS;
+    chain.push({ id, run: runFn, timeoutMs });
+  }
+
+  return chain;
+}
+
+// ---------------------------------------------------------------------------
+// Per-handler timeout + isolation wrapper.
+// ---------------------------------------------------------------------------
+
+async function runWithTimeout(
+  handler: ResolvedHandler,
+  input: HookInput,
+  ctx: HandlerCtx,
+): Promise<HandlerResult | null> {
+  // Capture the timer handle so we can clear it once the race settles. If the
+  // handler wins (the common case), an uncleared setTimeout keeps Node's event
+  // loop alive until it fires — adding ~timeoutMs to EVERY invocation's exit.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `handler "${handler.id}" timed out after ${handler.timeoutMs}ms`,
+          ),
+        ),
+      handler.timeoutMs,
+    );
+  });
+
+  try {
+    return await Promise.race([handler.run(input, ctx), timeoutPromise]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[oma hook] warn: ${msg} — skipping (fail-open)\n`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// runChain — execute the handler chain with merge rules per kind.
+//
+// Merge rules (design 019 §2):
+//   prompt   : concat all `context.additionalContext` in order, joined by "\n\n".
+//   pre_tool : first `block` short-circuits; else apply `mutate.updatedInput`
+//              sequentially (last wins); return accumulated mutate or null if none.
+//   stop     : any `block` → return block; else null.
+// ---------------------------------------------------------------------------
+
+export async function runChain(
+  handlers: ResolvedHandler[],
+  input: HookInput,
+  ctx: HandlerCtx,
+): Promise<HandlerResult | null> {
+  const kind = input.kind;
+
+  if (kind === "prompt") {
+    const contextParts: string[] = [];
+    for (const handler of handlers) {
+      const result = await runWithTimeout(handler, input, ctx);
+      if (result?.type === "context") {
+        contextParts.push(result.additionalContext);
+      }
+    }
+    if (contextParts.length === 0) return null;
+    return { type: "context", additionalContext: contextParts.join("\n\n") };
+  }
+
+  if (kind === "pre_tool") {
+    let lastMutate: (HandlerResult & { type: "mutate" }) | null = null;
+    for (const handler of handlers) {
+      const result = await runWithTimeout(handler, input, ctx);
+      if (!result) continue;
+      if (result.type === "block") return result; // short-circuit
+      if (result.type === "mutate") lastMutate = result;
+    }
+    return lastMutate;
+  }
+
+  if (kind === "post_tool") {
+    // First block short-circuits (mirrors pre_tool); otherwise concat any
+    // context results (claude PostToolUse supports additionalContext).
+    const contextParts: string[] = [];
+    for (const handler of handlers) {
+      const result = await runWithTimeout(handler, input, ctx);
+      if (!result) continue;
+      if (result.type === "block") return result; // short-circuit
+      if (result.type === "context") {
+        contextParts.push(result.additionalContext);
+      }
+    }
+    if (contextParts.length === 0) return null;
+    return { type: "context", additionalContext: contextParts.join("\n\n") };
+  }
+
+  if (kind === "stop") {
+    for (const handler of handlers) {
+      const result = await runWithTimeout(handler, input, ctx);
+      if (result?.type === "block") return result;
+    }
+    return null;
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// runHookDispatch — central dispatch entry point called by `oma hook run`.
+// ---------------------------------------------------------------------------
+
+export async function runHookDispatch(req: HookRequest): Promise<HookResponse> {
+  const { vendor, nativeEvent, rawStdin, cwd, sid } = req;
+
+  // Per-vendor normalization of the raw stdin payload into a canonical HookInput.
+  // Warn early if the event has no mapped kind so drift is visible in logs.
+  const kind = nativeEventToKind(vendor, nativeEvent);
+  if (!kind) {
+    process.stderr.write(
+      `[oma hook] warn: unmapped event kind for vendor="${vendor}" event="${nativeEvent}" — no handler registered, empty chain (fail-open)\n`,
+    );
+    return { output: "" };
+  }
+
+  const input = normalizeInput(vendor, nativeEvent, rawStdin);
+
+  if (!input) {
+    // Malformed payload — fail-open.
+    return { output: "" };
+  }
+
+  // Resolve the project root from the payload-provided cwd (authoritative —
+  // the vendor reports where the session runs), falling back to the wrapper's
+  // process cwd. Same resolver as the CLI, so state written by `oma goal:set`
+  // and read here agree. State files and config resolve under this root.
+  const projectRoot = resolveProjectRoot(input.cwd || cwd);
+
+  const chain = resolveChain(vendor, nativeEvent);
+  if (chain.length === 0) {
+    return { output: "" };
+  }
+
+  // One CUE/local-overlay-aware config load serves every handler and the
+  // semantic-memory selection.
+  const { config, memory } = resolveHookConfig(projectRoot);
+  const ctx: HandlerCtx = {
+    vendor,
+    cwd: projectRoot,
+    sid,
+    ...(config ? { config } : {}),
+  };
+
+  const merged = await withSelectedHookMemory(
+    projectRoot,
+    () => runChain(chain, input, ctx),
+    memory,
+  );
+
+  // Dialect render — translate the merged HandlerResult into the vendor-native
+  // stdout shape via hook-output.ts.  Each vendor expects a slightly different
+  // JSON (or plain-text for kiro prompts) envelope; centralizing the translation
+  // here keeps individual handlers vendor-agnostic.
+  if (!merged) {
+    // agy's PostToolUse contract expects a literal `{}` on stdout (verified
+    // from the agy 1.1.13 binary's embedded hook docs); whether truly empty
+    // stdout is tolerated is undocumented, so emit the contract shape.
+    if (kind === "post_tool" && vendor === "antigravity") {
+      return { output: "{}" };
+    }
+    return { output: "" };
+  }
+
+  let output: string;
+  switch (merged.type) {
+    case "context":
+      // post_tool context injects under the native PostToolUse event name;
+      // prompt-kind context keeps the prompt-submit / session-start naming.
+      output = makePromptOutput(
+        vendor,
+        merged.additionalContext,
+        kind === "post_tool" ? nativeEvent : promptHookEventName(nativeEvent),
+      );
+      break;
+    case "mutate":
+      output = makePreToolOutput(vendor, merged.updatedInput);
+      break;
+    case "block":
+      // Pre-tool blocks use the deny dialect; post-tool blocks use the
+      // feedback dialect (decision:block + additionalContext — the tool
+      // already ran); makeBlockOutput's dialects are Stop-shaped (cursor's
+      // followup_message would re-submit a turn instead of denying).
+      output =
+        kind === "pre_tool"
+          ? makePreToolDenyOutput(vendor, merged.reason)
+          : kind === "post_tool"
+            ? makePostToolBlockOutput(vendor, merged.reason)
+            : makeBlockOutput(vendor, merged.reason);
+      break;
+  }
+
+  return { output };
+}

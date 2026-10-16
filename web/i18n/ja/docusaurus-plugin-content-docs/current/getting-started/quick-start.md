@@ -1,0 +1,91 @@
+---
+title: クイックスタート
+description: インストールから検証まで、範囲を絞ったタスクを 1 つ実行します。期待される出力と復旧方法も説明します。
+---
+
+# クイックスタート
+
+このページは、小さなタスクを 1 つ実行し、具体的な結果を記録するために使います。必要なのはプロジェクトのディレクトリと、対応する AI CLI または IDE が少なくとも 1 つあることです。インストーラーは macOS、Linux、Windows に `bun`、`uv`、Serena、CUE、グローバルな `oma` コマンドをセットアップできます。最初のプロンプトには選択したホストの統合が必要ですが、プロバイダーやブラウザーの統合は任意です。
+
+## 1. インストールする
+
+プロジェクトのディレクトリから、ブートストラップインストーラーを実行します。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/first-fluke/oh-my-agent/main/cli/install.sh | bash
+```
+
+Windows PowerShell では次を実行します。
+
+```powershell
+irm https://raw.githubusercontent.com/first-fluke/oh-my-agent/main/cli/install.ps1 | iex
+```
+
+対話式のセットアップでは、応答言語、CLI ベンダー、[機能プロバイダー](./glossary.md#capability-provider)、[モデルプリセット](./glossary.md#model-preset)、プロジェクトの[スキルプリセット](./glossary.md#skill-preset)、スタックのバリアントを指定します。最初の実行ではデフォルトを使い、普段使っているベンダーを選び、リポジトリに最も近いプロジェクトプリセットを選択してください。各プリセットに含まれるスキルと、[プリセット外のスキルが必要なワークフロー](./installation.md#workflows-that-need-skills-outside-a-preset)については、[プリセット](./installation.md#presets)を参照してください。
+
+すでに `bun` がある場合は、インストーラーを直接実行できます。
+
+```bash
+bunx oh-my-agent@latest
+```
+
+ブートストラップスクリプトは現在のプロジェクトにインストールします。HOME 単位でインストールしたい場合は `oma install --global` を使います。プロジェクト単位とグローバルインストールを組み合わせる前に、[グローバルインストール](../guide/global-install.md)を読んでください。
+
+
+## 2. 結果を確認する
+
+同じプロジェクトのディレクトリからヘルスチェックを実行します。
+
+```bash
+oma doctor
+```
+
+テキスト形式のコマンドは、`CLI Status` や `Skills Status` などのセクションを含むレポートを出力し、終了ステータスを返します。実際の行は、プロジェクトにインストールされているホストによって異なります。
+
+```text
+┌   🩺 oh-my-agent doctor
+◇  CLI Status ...
+◇  Skills Status ...
+$ echo $?
+0
+```
+
+`oma doctor` は、任意の統合の問題を警告として報告することがあります。デフォルトの AgentMemory の準備は `oma install` と `oma update` の実行中に確認されます。インストール、起動、ヘルスチェックのいずれかに失敗すると、これらのコマンドは停止します。`providers.semantic_memory: none` または `honcho` を選ぶか、`OMA_NO_AGENTMEMORY=1` を設定すると、この準備を省略します。
+
+機械可読な形式で確認する場合は `oma doctor --json` を使います。レポートに問題が含まれていると、ゼロ以外の終了ステータスを返します。各標準エージェントロールで解決されたモデルと CLI を確認するには `oma doctor --profile` を使います。
+
+`oma` が使えなくても Bun がインストールされている場合は、グローバルコマンドなしで同じチェックを実行できます。
+
+```bash
+bunx oh-my-agent@latest doctor
+```
+
+それでも `oma` コマンドが見つからない場合は、新しいシェルを開くか、パッケージマネージャーの bin ディレクトリを `PATH` に追加してください。`oma` コマンドのインストール方法は[インストール](./installation.md#method-3-global-install)にあります。`oma doctor` が無効な設定を報告した場合は、指定されたフィールドを修正してもう一度実行します。復旧のために `.agents/oma-config.yaml` を削除しないでください。このファイルはユーザーが管理する設定で、更新後も設定を保持します。
+
+## 3. 小さなタスクを 1 つ実行する
+
+設定した AI ツールでリポジトリを開き、スキルを 1 つ名前で指定して、自己完結した結果を 1 つ依頼します。
+
+```text
+Use the discovered `oma-docs` skill to check one existing link in this project's README. If it is stale, update only that link. Done when you report the inspected target, the exact verification command, and its exit status.
+```
+
+ホストは、選択したスキルを特定し、対象を 1 つ確認して、対象のリンクだけを修正したか、リンクがすでに有効かのどちらかを報告するはずです。実際に実行したチェックについては、コマンドの出力と終了ステータスも含めてください。
+
+選択したホストでキーワードフックが有効になっている場合、対応するワークフローを起動できます。スキルのルーティングはホストまたは選択したワークフローが行います。そのため、任意のホストへのプロンプトだけでフック、特定のスキル、`CHARTER_CHECK` が必ず使われるわけではありません。実行コントラクトでは、リポジトリの規約を確認し、対象範囲だけを変更し、検証結果を報告します。実際のファイルとコマンドはプロジェクトによって異なります。
+
+API と UI の両方にまたがるタスクでは、`/work` または `/orchestrate` を明示的に選択します。単一ドメインのタスクなら、[単一スキル実行](../guide/single-skill.md)に進んでください。より長い例は[使い方ガイド](../guide/usage.md)にあります。
+
+## 4. 規模を広げる前にデフォルトを確認する
+
+OMA は初期状態で `model_preset: auto`、コードインテリジェンスに Serena、意味メモリに Agent Memory、Web 検索にネイティブ検索を使い、テレメトリを無効にします。Serena は共有 `bridge` トランスポートを使い、設定しない限り自動更新されます。ブラウザー DevTools MCP はオプトインで、初回の対話式セットアップでは Aside が先に提示されます。動作への影響と上書きキーは[重要なデフォルト](./important-defaults.md)を参照してください。
+
+管理対象のタスクが停止した場合は、まず `oma agent status <session-id> [agent-id]` を実行し、`.agents/state/agent-runs/` にある受領記録と、注入された申告（claim）のパスを確認します。これらの記録には、実行、タスク、ワークスペース、終了コード、検証状態が含まれます。`.agents/state/memories/` の人間向け `result-*.md` と `progress-*.md` は、存在する場合に追加の文脈を提供します。実行が終了したことを確認してから、失敗した最小のコマンドだけを再実行してください。[永続ワークフロー](./glossary.md#persistent-workflow)は完了するか `workflow done` と指示するまでアクティブです。状態ファイルからの復旧については、[ワークフロー](../core-concepts/workflows.md#persistent-mode-mechanics)を参照してください。
+
+## 次のステップ
+
+- [重要なデフォルト](./important-defaults.md): 優先順位、プロバイダー、復旧方法
+- [インストール](./installation.md): プリセット、ベンダー設定、グローバルインストール、更新
+- [エージェント](../core-concepts/agents.md): 33 個のスキルパッケージとディスパッチロール
+- [ワークフロー](../core-concepts/workflows.md): 計画、並列実行、QA、永続モード
+- [トラブルシューティング](../guide/troubleshooting.md): インストール、ベンダー、フックが期待どおりに動かない場合

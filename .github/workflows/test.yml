@@ -1,0 +1,163 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    # Defense in depth: every recent Windows run has hung the vitest step and
+    # been cancelled by the default 6-hour job timeout (issue tracked
+    # separately). Cap at 20 min so a regression on any OS surfaces fast
+    # instead of burning runner minutes for hours.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # Keep in step with mise.toml so CI and local runs use the same bun.
+          bun-version: "1.4.2"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Lint (cli)
+        run: bun run --cwd cli lint
+
+      - name: Boundaries (cli)
+        run: bun run --cwd cli check:boundaries
+
+      # Deterministic gates — no OS variance, so one runner is enough.
+      - name: Emit drift (cli)
+        if: matrix.os == 'ubuntu-latest'
+        run: bun run --cwd cli check:emit-drift
+
+      - name: Trigger accuracy (cli)
+        if: matrix.os == 'ubuntu-latest'
+        run: bun run --cwd cli cli.ts verify triggers
+
+      - name: Typecheck
+        if: matrix.os == 'ubuntu-latest'
+        run: bun run typecheck
+
+      # Generated docs (cli/README.md, CLI options registry, skill catalog)
+      # must match their sources. Runs before Build, whose sync:readme step
+      # would otherwise rewrite cli/README.md and hide the drift.
+      - name: Docs drift
+        if: matrix.os == 'ubuntu-latest'
+        run: bun run docs:check
+
+      - name: Test Orca plugin (no build)
+        run: bun run test:orca
+
+      - name: Lint DSH plugin
+        run: bunx biome check integrations/dsh
+
+      - name: Test DSH plugin (no build)
+        run: bun run test:dsh
+
+      # Windows hangs indefinitely inside vitest (root cause TBD — likely a
+      # spawn/stdin test that never closes the loop). Skip until fixed; Lint,
+      # Build, and install.ps1 smoke still validate Windows (Typecheck is
+      # OS-independent and runs on ubuntu only).
+      - name: Test
+        if: matrix.os != 'windows-latest'
+        run: bun run test
+
+      - name: Build
+        run: bun run --cwd cli build
+
+      # The full vitest suite hangs on Windows (see Test step above), but a few
+      # files have win32-only branches that otherwise never execute on real
+      # Windows:
+      #   - AgentMemory service generator (Task Scheduler XML + schtasks)
+      #   - oma schedule SchtasksAdapter (cron -> schtasks /Create flags,
+      #     `where oma` resolution, win32 path handling)
+      #   - schedule selectAdapter win32 -> Schtasks routing
+      #   - test-filter hook win32 guard (never wrap commands in the Bash-only
+      #     pipefail pipeline on Windows hosts, #618)
+      #   - state events atomic write (fsyncSync on a writable temp-file
+      #     handle — the EPERM failure only manifests on real Windows, #613)
+      # All are pure (mocked command runners / fs, no spawn/stdin), so they run
+      # safely here without triggering the suite-wide hang.
+      - name: Test win32-only code paths
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 5
+        run: bun run --cwd cli test agentmemory-service.test schtasks.test schedule/port.test test-filter-run.test events.atomic-write.test state/events.test
+
+      - name: Smoke test install.sh (skip bunx)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        env:
+          OMA_INSTALL_NO_RUN: "1"
+        run: |
+          bash ./cli/install.sh
+          export PATH="${HOME}/.local/bin:${HOME}/.bun/bin:${PATH}"
+          if ! command -v bun >/dev/null 2>&1; then
+            echo "bun should be on PATH after install.sh" >&2
+            exit 1
+          fi
+          if ! command -v uv >/dev/null 2>&1; then
+            echo "uv should be on PATH after install.sh" >&2
+            exit 1
+          fi
+          if ! command -v serena >/dev/null 2>&1; then
+            echo "serena should be on PATH after install.sh" >&2
+            exit 1
+          fi
+          if ! command -v oma >/dev/null 2>&1; then
+            echo "oma should be on PATH after install.sh" >&2
+            exit 1
+          fi
+          echo "install.sh smoke test passed (bun + uv + serena + oma resolved)"
+
+      - name: Validate install.ps1 syntax
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$pwd/cli/install.ps1", [ref]$null, [ref]$errors
+          ) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "install.ps1 parsed successfully"
+
+      - name: Smoke test install.ps1 (skip bunx)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          OMA_INSTALL_NO_RUN: "1"
+        run: |
+          ./cli/install.ps1
+          if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+            Write-Error "bun should be on PATH after install.ps1"
+            exit 1
+          }
+          if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            Write-Error "uv should be on PATH after install.ps1"
+            exit 1
+          }
+          if (-not (Get-Command serena -ErrorAction SilentlyContinue)) {
+            Write-Error "serena should be on PATH after install.ps1"
+            exit 1
+          }
+          if (-not (Get-Command oma -ErrorAction SilentlyContinue)) {
+            Write-Error "oma should be on PATH after install.ps1"
+            exit 1
+          }
+          Write-Host "install.ps1 smoke test passed (bun + uv + serena + oma resolved)"

@@ -1,0 +1,804 @@
+import { execFileSync } from "node:child_process";
+import {
+  cpSync,
+  existsSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import * as p from "@clack/prompts";
+import pc from "picocolors";
+import { ensureAgentMemory } from "../../io/agentmemory/ensure.js";
+import { pruneBackupRoot } from "../../io/backup.js";
+import { maybeApplyRecommendedGitConfig } from "../../io/git-recommended.js";
+import {
+  hasBlockingGlobalHomeMigration,
+  migrateGlobalHome,
+} from "../../io/global-home-migration.js";
+import { ensureGortexProject } from "../../io/gortex.js";
+import { maybeSelfUpdate } from "../../io/self-update.js";
+import {
+  deriveSerenaLanguages,
+  ensureOmaSerenaContexts,
+  ensureSerenaProject,
+  inferSerenaLanguages,
+} from "../../io/serena.js";
+import { downloadAndExtract } from "../../io/tarball.js";
+import pkg from "../../package.json";
+import { appendMissingConfigKeys } from "../../platform/agent-config/config-merge.js";
+import {
+  getInstallMode,
+  getInstallRoot,
+  isProjectModeInHome,
+} from "../../platform/install-context.js";
+import { recordUpdatedSkills } from "../../platform/managed-skill-ownership.js";
+import {
+  fetchRemoteManifest,
+  getLocalVersion,
+  getNeedsReconcile,
+  hasInstalledProject,
+  readSkillDescription,
+  saveLocalVersion,
+  setNeedsReconcile,
+  snapshotArtifacts,
+} from "../../platform/manifest.js";
+import { syncProviderMcp } from "../../platform/provider-mcp.js";
+import {
+  createGlobalSkillDiscoveryLinks,
+  createVendorSymlinks,
+  createVendorWorkflowSymlinks,
+  getInstalledSkillNames,
+  getInstalledWorkflowNames,
+} from "../../platform/skills-installer.js";
+import {
+  DEFAULT_KEEP_SESSIONS,
+  gcOrphanSessions,
+  gcProjectSessions,
+  loadMemoryGcConfig,
+} from "../../state/session-gc.js";
+import { promptUninstallCompetitors } from "../../utils/competitors.js";
+import {
+  isTelemetryEnabled,
+  loadDevToolsBrowsers,
+  loadOmaConfig,
+  loadSerenaConfig,
+} from "../../utils/config.js";
+import { LOCAL_CONFIG_NAMES } from "../../utils/config-layers.js";
+import {
+  formatGeminiDeprecationWarning,
+  usesGeminiCli,
+} from "../../utils/gemini-deprecation.js";
+import {
+  acquireLock,
+  bindInstallLockRelease,
+  DEAD_PID_GRACE_MS,
+  lockPath,
+} from "../../utils/install-lock.js";
+import { loadProviders } from "../../utils/providers.js";
+import { syncBrowserMcp } from "../../vendors/browser-mcp.js";
+import { link } from "../link/run.js";
+import { runMigrations, runMigrationsWithStatus } from "../migrations/index.js";
+import { resolveAutoUpdateCli } from "./auto-update-config.js";
+import {
+  captureBackendStackBeforeCopy,
+  restoreBackendStackAfterCopy,
+} from "./backend-stack.js";
+import { maybePromptGitHubStar } from "./github-star.js";
+import {
+  classifyUpdateTarget,
+  collectAgentRequiredSkills,
+  selectSkillsToPrune,
+} from "./install-state.js";
+import { noteArtifactDiff, noteNewSkills } from "./notes.js";
+import {
+  formatStrayCueRemoval,
+  removeStrayCueTemplate,
+} from "./stray-shared-config.js";
+import type { UpdateOptions } from "./types.js";
+import { createUI, type UpdateUI } from "./ui.js";
+import { resolveUpdateVendors, toCliTools } from "./vendors.js";
+
+export { resolveAutoUpdateCli } from "./auto-update-config.js";
+export {
+  classifyUpdateTarget,
+  collectAgentRequiredSkills,
+  selectSkillsToPrune,
+} from "./install-state.js";
+export type { UpdateOptions } from "./types.js";
+export { resolveUpdateVendors } from "./vendors.js";
+
+const UPDATE_COPY_EXCLUSIONS = [
+  "/.agents/skills/_version.json",
+  "/.agents/skills/oma-video/config/video-config.yaml",
+  "/.agents/skills/oma-image/config/image-config.yaml",
+] as const;
+
+/**
+ * Shared config sources, in loader priority order. The release ships both as
+ * templates, but a project keeps exactly one; see {@link syncSharedConfig}.
+ */
+const SHARED_CONFIG_NAMES = ["oma-config.cue", "oma-config.yaml"] as const;
+
+export function shouldCopyProjectAsset(src: string): boolean {
+  const normalized = src.replace(/\\/g, "/");
+  return (
+    !normalized.includes(".agents/eval") &&
+    // User-owned procedure overrides and constitution; never shipped or reset.
+    !normalized.includes(".agents/evolution") &&
+    ![...LOCAL_CONFIG_NAMES, ...SHARED_CONFIG_NAMES].some((name) =>
+      normalized.endsWith(`/.agents/${name}`),
+    ) &&
+    !UPDATE_COPY_EXCLUSIONS.some((suffix) => normalized.endsWith(suffix))
+  );
+}
+
+/**
+ * Place the shared config without ever creating a second source. Same rule as
+ * a fresh install (`installConfigs`): when the user has neither file, copy the
+ * shipped template, preferring CUE. Otherwise keep the user's own file(s) —
+ * `force` resets only the file(s) the user already has to the template.
+ */
+export function syncSharedConfig(
+  repoDir: string,
+  cwd: string,
+  force: boolean,
+): void {
+  const existing = SHARED_CONFIG_NAMES.filter((name) =>
+    existsSync(join(cwd, ".agents", name)),
+  );
+  const targets =
+    existing.length > 0
+      ? force
+        ? existing
+        : []
+      : SHARED_CONFIG_NAMES.filter((name) =>
+          existsSync(join(repoDir, ".agents", name)),
+        ).slice(0, 1);
+  for (const name of targets) {
+    const src = join(repoDir, ".agents", name);
+    if (existsSync(src)) cpSync(src, join(cwd, ".agents", name));
+  }
+}
+
+async function prepareSharedMemory(root: string, ui: UpdateUI): Promise<void> {
+  if (loadProviders(root).semantic_memory !== "agentmemory") return;
+  const memory = await ensureAgentMemory({
+    onProgress: (message) => ui.note(message, "Memory"),
+  });
+  ui.note(
+    memory.state === "disabled"
+      ? "Shared memory disabled by OMA_NO_AGENTMEMORY."
+      : "Shared memory ready.",
+    "Memory",
+  );
+}
+
+export async function update(options: UpdateOptions = {}): Promise<void> {
+  const {
+    force = false,
+    withNewSkills = false,
+    ci = false,
+    yes = false,
+  } = options;
+  const nonInteractive =
+    ci ||
+    yes ||
+    process.env.OMA_YES === "1" ||
+    process.env.OMA_YES === "true" ||
+    process.env.CI === "true" ||
+    process.env.CI === "1";
+
+  if (!ci && process.stdout.isTTY) console.clear();
+
+  const ui = createUI(ci);
+  ui.intro(pc.bgMagenta(pc.white(" 🛸 oh-my-agent update ")));
+
+  const installRoot = getInstallRoot();
+  const mode = getInstallMode();
+
+  if (mode === "global") {
+    const migration = await migrateGlobalHome({
+      env: { ...process.env, OMA_HOME: installRoot },
+    });
+    if (hasBlockingGlobalHomeMigration(migration)) {
+      throw new Error(
+        `Global home migration needs attention before update: ${[
+          ...migration.conflicts,
+          ...migration.deferred,
+        ].join("; ")}`,
+      );
+    }
+    if (migration.deferred.length)
+      ui.note(migration.deferred.join("\n"), "Global home migration deferred");
+  }
+
+  // Acquire install lock — prevents concurrent install/update runs
+  const lock = acquireLock(installRoot);
+  if (!lock.ok) {
+    const msg =
+      `Another oma install/update is running (pid=${lock.held.pid}). ` +
+      `If none is running it crashed — remove ${lockPath(installRoot)}, ` +
+      `or wait ~${DEAD_PID_GRACE_MS / 1000}s for it to auto-clear.`;
+    if (ci) {
+      throw new Error(msg);
+    }
+    p.cancel(msg);
+    process.exit(1);
+  }
+  const releaseLock = bindInstallLockRelease(lock.release);
+
+  // In global mode, target the global SSOT and show a banner.
+  if (mode === "global") {
+    ui.note(
+      `Updating global install at ${pc.cyan(installRoot)}`,
+      "Global mode",
+    );
+  }
+
+  const cwd = installRoot;
+
+  // #788 — a project-mode update from $HOME would reconcile the user's GLOBAL
+  // vendor files (~/.claude/settings.json, …) with project-relative hook paths
+  // and break hooks everywhere. `link` refuses the same way; `install` asks.
+  if (isProjectModeInHome(cwd, mode, homedir())) {
+    const msg =
+      "Refusing to update in HOME without --global: ~/.claude/settings.json and the other HOME vendor files would be rewritten with project-relative hook paths. " +
+      "Run `oma update --global` for the HOME install, or cd to a project directory first.";
+    releaseLock();
+    if (ci) {
+      throw new Error(msg);
+    }
+    p.cancel(msg);
+    process.exit(1);
+  }
+
+  try {
+    if (mode === "global") createGlobalSkillDiscoveryLinks(installRoot);
+    const localVersion = await getLocalVersion(cwd);
+    const hasExistingInstall = hasInstalledProject(cwd);
+    const targetState = classifyUpdateTarget(localVersion, hasExistingInstall);
+
+    if (targetState === "missing") {
+      const message =
+        "oh-my-agent is not installed in this project. Run `oma install` first.";
+      ui.logError(message);
+      if (ci) {
+        throw new Error(message);
+      }
+      process.exit(1);
+    }
+
+    // Vendors this update is allowed to touch. Migrations share the set the
+    // reconcile step below uses (`link` at the end of this function), so a
+    // vendor excluded from the update never has its config rewritten.
+    const migrationVendors = resolveUpdateVendors(cwd, options);
+
+    if (mode === "project") {
+      const { migrateRuntimeState } = await import(
+        "../../state/runtime-migration.js"
+      );
+      const runtime = await migrateRuntimeState({ projectDir: cwd });
+      const changed = runtime.entries.filter(
+        (entry) => entry.status !== "unchanged",
+      );
+      if (changed.length) {
+        const counts = new Map<string, number>();
+        for (const entry of changed)
+          counts.set(entry.status, (counts.get(entry.status) ?? 0) + 1);
+        ui.note(
+          `${[...counts].map(([status, count]) => `${status}: ${count}`).join(", ")}\nOriginals preserved; unbound retries are excluded from delivery.${runtime.ok ? "" : "\nReview remaining records with oma state migrate --runtime --dry-run."}`,
+          "Runtime migration",
+        );
+      }
+    }
+
+    // Run all migrations (after confirming project is installed)
+    const migrationStatus = runMigrationsWithStatus(cwd, {
+      vendors: migrationVendors,
+    });
+    const migrationActions = migrationStatus.actions;
+    if (migrationActions.length > 0) {
+      ui.note(
+        migrationActions.map((m) => `${pc.green("✓")} ${m}`).join("\n"),
+        "Migration",
+      );
+    }
+
+    // Older updates copied the shipped oma-config.cue into YAML projects, where
+    // it outranks the user's YAML. Remove it only while it is still a template.
+    // Runs before the version check so up-to-date installs are cleaned too.
+    try {
+      const strayCue = removeStrayCueTemplate(cwd);
+      if (strayCue) {
+        ui.note(formatStrayCueRemoval(cwd, strayCue), "Config cleanup");
+      }
+    } catch (err) {
+      ui.note(
+        `Kept .agents/oma-config.cue (${err instanceof Error ? err.message : String(err)}).`,
+        "Config cleanup",
+      );
+    }
+
+    // Reconcile for projected-file migrations, interrupted runs, or provider
+    // selection drift that left vendor-native MCP configuration out of date.
+    const providerMcpNeedsReconcile =
+      syncProviderMcp(cwd, migrationVendors, {
+        global: mode === "global",
+        dryRun: true,
+      }).length > 0;
+    const browsers = loadDevToolsBrowsers(cwd);
+    const browserMcpNeedsReconcile =
+      browsers !== undefined &&
+      syncBrowserMcp(cwd, browsers, migrationVendors, {
+        global: mode === "global",
+        dryRun: true,
+      }).length > 0;
+    const needsReconcile =
+      migrationStatus.requiresReconcile ||
+      getNeedsReconcile(cwd) ||
+      providerMcpNeedsReconcile ||
+      browserMcpNeedsReconcile;
+
+    // Persist reconcile flag so a failed download doesn't lose the intent
+    if (migrationStatus.requiresReconcile && !getNeedsReconcile(cwd)) {
+      setNeedsReconcile(cwd, true);
+    }
+
+    // Detect and offer to remove competing tools (skip in CI — no stdin)
+    if (!nonInteractive) {
+      await promptUninstallCompetitors(cwd);
+    }
+
+    if (targetState === "legacy") {
+      ui.note(
+        "Existing .agents installation detected without _version.json. Updating in place and restoring version metadata.",
+        "Legacy install",
+      );
+    }
+
+    let spinner: ReturnType<typeof ui.spinnerStart> | undefined;
+
+    try {
+      spinner = ui.spinnerStart("Checking for updates...");
+
+      const remoteManifest = await fetchRemoteManifest();
+
+      if (
+        localVersion === remoteManifest.version &&
+        !needsReconcile &&
+        !withNewSkills
+      ) {
+        await prepareSharedMemory(cwd, ui);
+        if (mode === "global") link({ root: cwd, quiet: true });
+        spinner.stop(pc.green("Already up to date!"));
+        ui.outro(`Current version: ${pc.cyan(localVersion)}`);
+        await maybeSelfUpdate({
+          currentVersion: pkg.version,
+          enabled: resolveAutoUpdateCli(cwd),
+          onSpawnStart: (msg) => ui.note(msg, "CLI auto-update"),
+          onNotice: (msg) => ui.note(msg, "CLI update available"),
+        });
+        return;
+      }
+
+      const isReconcileOnly = localVersion === remoteManifest.version;
+
+      spinner.message(`Downloading ${pc.cyan(remoteManifest.version)}...`);
+
+      // Pinned to the release the manifest points at (checksum-verified
+      // release asset first); main-branch content only via OMA_UPDATE_CHANNEL.
+      const download = await downloadAndExtract({
+        version: remoteManifest.version,
+      });
+      const { dir: repoDir, cleanup } = download;
+      const downloadWarnings = download.warnings ?? [];
+      if (downloadWarnings.length > 0) {
+        ui.note(downloadWarnings.join("\n"), "Download source");
+      }
+
+      try {
+        spinner.message("Copying files...");
+
+        // Run migrations (e.g. legacy config path rename)
+        runMigrations(cwd, { vendors: migrationVendors });
+
+        // Preserve user-customized config files before bulk copy. The shared
+        // oma-config sources are excluded from the copy and placed by
+        // syncSharedConfig below.
+        const userPrefsPath = join(cwd, ".agents", "oma-config.yaml");
+        const mcpPath = join(cwd, ".agents", "mcp.json");
+        const hadUserPrefs = !force && existsSync(userPrefsPath);
+        const savedMcp =
+          !force && existsSync(mcpPath) ? readFileSync(mcpPath) : null;
+
+        const backendStackState = captureBackendStackBeforeCopy(cwd, force);
+
+        const beforeArtifacts = snapshotArtifacts(cwd);
+
+        cpSync(join(repoDir, ".agents"), join(cwd, ".agents"), {
+          recursive: true,
+          force: true,
+          filter: shouldCopyProjectAsset,
+        });
+
+        const evalDir = join(cwd, ".agents", "eval");
+        if (existsSync(evalDir)) {
+          rmSync(evalDir, { recursive: true, force: true });
+        }
+
+        // Restore user-customized config files
+        if (savedMcp) writeFileSync(mcpPath, savedMcp);
+        syncSharedConfig(repoDir, cwd, force);
+
+        restoreBackendStackAfterCopy(cwd, repoDir, backendStackState);
+
+        // Post-copy migrations
+        const postCopyMigrations = runMigrations(cwd, {
+          vendors: migrationVendors,
+        });
+        if (postCopyMigrations.length > 0) {
+          ui.note(
+            postCopyMigrations.map((m) => `${pc.green("✓")} ${m}`).join("\n"),
+            "Migration",
+          );
+        }
+
+        // Append template config keys the user's file is missing. User-set
+        // keys are preserved verbatim; only new keys from the shipped
+        // template are added (with template defaults).
+        if (hadUserPrefs) {
+          const templateConfigPath = join(
+            repoDir,
+            ".agents",
+            "oma-config.yaml",
+          );
+          if (existsSync(templateConfigPath)) {
+            const merged = appendMissingConfigKeys(
+              readFileSync(userPrefsPath, "utf-8"),
+              readFileSync(templateConfigPath, "utf-8"),
+            );
+            if (merged.addedKeys.length > 0) {
+              writeFileSync(userPrefsPath, merged.content);
+              ui.note(
+                merged.addedKeys.map((k) => `${pc.green("+")} ${k}`).join("\n"),
+                "oma-config.yaml — new keys added",
+              );
+            }
+          }
+        }
+
+        // Preserve pending vendor work if memory preparation fails after copy.
+        setNeedsReconcile(cwd, true);
+
+        // Preserve the user's skill selection. The bulk copy above drops in
+        // every skill the release ships; prune the ones that are new and were
+        // not already installed so an update refreshes the existing selection
+        // instead of growing it. `--with-new-skills` opts into the new ones.
+        // Capture descriptions before pruning so we can still surface them.
+        const prunedSkills = selectSkillsToPrune(
+          beforeArtifacts.skills,
+          getInstalledSkillNames(cwd),
+          withNewSkills,
+          collectAgentRequiredSkills(cwd),
+        );
+        const newSkillNotes = prunedSkills.map((name) => ({
+          name,
+          desc: readSkillDescription(cwd, name),
+        }));
+        for (const name of prunedSkills) {
+          rmSync(join(cwd, ".agents", "skills", name), {
+            recursive: true,
+            force: true,
+          });
+        }
+        const installedSkillNames = getInstalledSkillNames(cwd);
+        recordUpdatedSkills(repoDir, cwd);
+
+        // Prune before the fallible memory step so a retry does not mistake
+        // copied release skills for the user's original selection.
+        // Use the final configuration, including force resets and local overrides.
+        await prepareSharedMemory(cwd, ui);
+
+        // Reconcile all vendor adaptations via the link kernel. agy HUD,
+        // Claude .mcp.json seeding, vendor settings (Claude / Gemini / Qwen /
+        // Codex telemetry-aware), Cursor MCP + rules, doc merging, and CLI
+        // skill symlinks are all owned by link() — adding a new vendor only
+        // requires changes in cli/commands/link/link.ts.
+        const updateVendors = migrationVendors;
+        link({
+          root: cwd,
+          vendorFilter: updateVendors,
+          quiet: true,
+          telemetry: isTelemetryEnabled(cwd),
+          refreshSymlinks: false,
+        });
+        const cliSymlinks =
+          updateVendors.length > 0
+            ? createVendorSymlinks(
+                cwd,
+                toCliTools(updateVendors),
+                installedSkillNames,
+              )
+            : { created: [], skipped: [], removed: [] };
+
+        // Workflows are surfaced via direct symlinks at .agents/workflows/*.md.
+        if (updateVendors.length > 0) {
+          createVendorWorkflowSymlinks(
+            cwd,
+            toCliTools(updateVendors),
+            getInstalledWorkflowNames(cwd),
+          );
+        }
+
+        // Vendor adaptations complete — clear reconcile flag
+        setNeedsReconcile(cwd, false);
+
+        // Backups: the canonical root is NOT cleared on success. Its
+        // safe-write copies (bounded per target by safe-write) are the only
+        // way back from a merge that dropped a user setting, and a successful
+        // update says nothing about that. Other snapshots age out; the legacy
+        // scatter from pre-consolidation versions is still removed.
+        pruneBackupRoot(cwd);
+        const legacyBackupDirs = [
+          join(cwd, ".migration-backup"), // legacy (migrations 011/013)
+          join(cwd, ".agents", ".migration-backup"), // legacy (migration 002)
+        ];
+        for (const dir of legacyBackupDirs) {
+          if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+        }
+
+        // Session GC: every workflow match opens an L1 session and nothing
+        // else prunes them. Same policy as `oma memory gc --scope sessions`
+        // (keep window from memory.gc.keep_sessions, live sessions kept),
+        // plus profile sessions of projects that no longer exist. Warn-only.
+        if (mode !== "global") {
+          try {
+            const keep = loadMemoryGcConfig(cwd).keep ?? DEFAULT_KEEP_SESSIONS;
+            const pruned =
+              gcProjectSessions(cwd, keep, false).pruned.length +
+              gcOrphanSessions().pruned.length;
+            if (pruned > 0) {
+              ui.note(
+                `Pruned ${pruned} old session(s) (keep ${keep}; see \`oma memory gc\`).`,
+                "Memory GC",
+              );
+            }
+          } catch (err) {
+            ui.note(
+              `Skipped session GC (${err instanceof Error ? err.message : String(err)}).`,
+              "Memory GC",
+            );
+          }
+        }
+
+        if (loadProviders(cwd).code_intelligence === "serena") {
+          // --- Serena Project Setup ---
+          // Language servers follow the project's own files; the skill-derived
+          // set only fills in when detection comes up empty. Each open agent
+          // session spawns its own serena + LSP tree, so an unused language
+          // server costs its memory once per concurrent session.
+          //
+          // Skipped in global mode: `cwd` is then $HOME (or OMA_HOME), which is
+          // not a project — see isForbiddenSerenaProjectRoot. Gating on the mode
+          // also avoids scanning $HOME for languages.
+          if (mode !== "global") {
+            const { languages, prunable } = deriveSerenaLanguages(
+              cwd,
+              inferSerenaLanguages(cwd),
+            );
+            ensureSerenaProject(cwd, languages, { prunable });
+          }
+
+          // --- Optional Serena Binary Upgrade ---
+          // On by default; opt out via `serena.auto_update: false` in .agents/oma-config.yaml.
+          // Skip silently if uv is not installed or the upgrade fails — the
+          // serena MCP still works on the previously installed version.
+          if (loadSerenaConfig(cwd).autoUpdate) {
+            try {
+              execFileSync(
+                "uv",
+                ["tool", "upgrade", "serena-agent", "--prerelease=allow"],
+                { stdio: "ignore" },
+              );
+              ui.note("Serena prerelease update check completed.", "Serena");
+            } catch {
+              ui.note(
+                "Skipped serena upgrade (uv unavailable or upgrade failed).",
+                "Serena",
+              );
+            }
+          }
+
+          const serenaContexts = ensureOmaSerenaContexts();
+          if (serenaContexts.failed.length > 0) {
+            ui.note(
+              `Could not install Serena's OMA context: ${serenaContexts.failed.join(", ")}`,
+              "Serena",
+            );
+          }
+        } else if (
+          loadProviders(cwd).code_intelligence === "gortex" &&
+          mode !== "global"
+        ) {
+          // --- Gortex Project Setup ---
+          // Reconciled on every update like Serena's project.yml: re-adds the
+          // OMA exclude patterns and re-registers the root if it was
+          // untracked. Global mode is skipped for the same reason as Serena
+          // (cwd is $HOME there). Warn-only.
+          const gortex = ensureGortexProject(cwd);
+          const lines: string[] = [];
+          if (gortex.excludes.added.length > 0) {
+            lines.push(
+              `Excludes configured for this project: ${gortex.excludes.added.join(", ")}`,
+            );
+          }
+          if (!gortex.binaryAvailable) {
+            lines.push(
+              "gortex not found on PATH — install Gortex, then rerun `oma update` to track this project.",
+            );
+          } else if (gortex.tracked === "tracked") {
+            lines.push(
+              "Project registered in Gortex (initial indexing continues in the background).",
+            );
+          } else if (gortex.tracked === "started") {
+            lines.push(
+              "Gortex tracking requested; confirm with `gortex repos` once the daemon settles.",
+            );
+          } else if (gortex.tracked === "failed") {
+            lines.push(
+              `Could not register the project in Gortex — run \`gortex track ${cwd}\` manually.`,
+            );
+          } else if (gortex.tracked === "unknown") {
+            lines.push(
+              "Could not read Gortex's tracked repositories (daemon unresponsive?); rerun `oma update` later.",
+            );
+          }
+          if (lines.length > 0) ui.note(lines.join("\n"), "Gortex");
+        }
+
+        // --- Always-latest Hyperframes toolchain + heygen-com/hyperframes (oma-video) ---
+        // Only refreshes a cache that already exists; a first `oma video compose`
+        // fetches it on demand. Warn-only.
+        try {
+          const [
+            {
+              describeToolchain,
+              ensureLatestToolchain,
+              ensureHyperframesSkills,
+            },
+            { loadVideoConfig },
+          ] = await Promise.all([
+            import("../../io/video/internal/hyperframes-workspace.js"),
+            import("../../io/video/config.js"),
+          ]);
+          if (
+            installedSkillNames.includes("oma-video") &&
+            describeToolchain().version
+          ) {
+            const policy = (await loadVideoConfig(cwd)).hyperframes;
+            const tc = await ensureLatestToolchain({
+              checkIntervalMin: policy.checkIntervalMin,
+              force: false,
+            });
+            const skills = await ensureHyperframesSkills({
+              checkIntervalMin: policy.checkIntervalMin,
+              force: false,
+            });
+            const parts = [
+              { name: "hyperframes", version: tc?.version, result: tc },
+              { name: "skills", version: skills?.ref, result: skills },
+            ].flatMap(({ name, version, result }) => {
+              if (!result) return [`${name}: check failed`];
+              if (result.status === "current") return [];
+              if (result.status === "fresh") {
+                return [`${name} updated to ${version}`];
+              }
+              return [
+                `${name}: ${result.note ?? `update check failed; using cached ${version}`}`,
+              ];
+            });
+            if (parts.length > 0) {
+              ui.note(parts.join("\n"), "Hyperframes");
+            }
+          }
+        } catch (err) {
+          ui.note(
+            `Skipped hyperframes refresh (${err instanceof Error ? err.message : String(err)}).`,
+            "Hyperframes",
+          );
+        }
+
+        // Stamp the new version AND the install mode into _version.json
+        // (schemaVersion=2). This both records the new version and ensures
+        // legacy installs that lack `mode` get backfilled on next update.
+        await saveLocalVersion(cwd, remoteManifest.version, mode);
+
+        spinner.stop();
+
+        noteArtifactDiff(ui, cwd, beforeArtifacts);
+
+        noteNewSkills(ui, newSkillNotes);
+
+        if (cliSymlinks.created.length > 0 || cliSymlinks.removed.length > 0) {
+          ui.note(
+            [
+              ...cliSymlinks.removed
+                .filter((s) => !cliSymlinks.created.includes(s))
+                .map((s) => `${pc.red("×")} ${s}`),
+              ...cliSymlinks.created.map((s) => `${pc.green("→")} ${s}`),
+            ].join("\n"),
+            "Symlinks updated",
+          );
+        }
+
+        // Scheduled jobs are registered in the OS with an `oma …` argv. A CLI
+        // upgrade that renames a command path would otherwise leave every
+        // existing registration invoking a spelling the new binary rejects
+        // (this is how the weekly `schedule:run` jobs silently died after
+        // the command-path standardization). Re-sync is warn-only.
+        try {
+          const { syncSchedules } = await import("../../io/schedule/sync.js");
+          const sched = await syncSchedules();
+          if (sched.synced > 0 || sched.resynced > 0) {
+            ui.note(
+              `${sched.resynced} stale registration(s) rewritten, ${sched.synced} missing job(s) re-registered.`,
+              "Schedules re-synced",
+            );
+          }
+          if (sched.malformed > 0) {
+            ui.note(
+              `${sched.malformed} malformed manifest entr${sched.malformed === 1 ? "y" : "ies"} dropped (no cron or OS label to register).`,
+              "Schedules",
+            );
+          }
+        } catch (err) {
+          ui.note(
+            `Could not re-sync scheduled jobs: ${err instanceof Error ? err.message : String(err)}. Run \`oma schedule sync\` manually.`,
+            "Schedules",
+          );
+        }
+
+        const postUpdateOmaConfig = loadOmaConfig(cwd);
+        if (usesGeminiCli(postUpdateOmaConfig)) {
+          ui.note(formatGeminiDeprecationWarning(), "Gemini CLI deprecation");
+        }
+
+        ui.outro(
+          isReconcileOnly
+            ? `Reconciled project at version ${pc.cyan(remoteManifest.version)}`
+            : `Updated to version ${pc.cyan(remoteManifest.version)}!`,
+        );
+
+        await maybeApplyRecommendedGitConfig({ nonInteractive });
+        await maybePromptGitHubStar(nonInteractive);
+
+        // A detached self-update replaces the global executable while this
+        // process keeps running. Starting it before the project reconciliation
+        // lets an old process copy stale release contents into `.agents/`.
+        // Defer it until every project write has completed; the new CLI still
+        // takes effect on the next command, as documented by maybeSelfUpdate.
+        await maybeSelfUpdate({
+          currentVersion: pkg.version,
+          enabled: resolveAutoUpdateCli(cwd),
+          onSpawnStart: (msg) => ui.note(msg, "CLI auto-update"),
+          onNotice: (msg) => ui.note(msg, "CLI update available"),
+        });
+      } finally {
+        cleanup();
+      }
+    } catch (error) {
+      spinner?.stop("Update failed");
+      ui.logError(
+        error instanceof Error ? (error.stack ?? error.message) : String(error),
+      );
+      if (ci) {
+        throw error;
+      }
+      process.exit(1);
+    }
+  } finally {
+    releaseLock();
+  }
+}

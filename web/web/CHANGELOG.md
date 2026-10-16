@@ -1,0 +1,1164 @@
+# Changelog
+
+## [11.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v11.0.4...web-v11.1.0) (2026-10-15)
+
+
+### Features
+
+* **docs:** consolidate artifact storage and migrate legacy paths ([c9169af](https://github.com/first-fluke/oh-my-agent/commit/c9169afa163ddaa76da1a2daec5b7ac8cec2be6e))
+
+## [11.0.4](https://github.com/first-fluke/oh-my-agent/compare/web-v11.0.3...web-v11.0.4) (2026-10-15)
+
+
+### Bug Fixes
+
+* **config:** save preferences where they take effect in CUE projects ([6ca1310](https://github.com/first-fluke/oh-my-agent/commit/6ca131083b3b2d82ee04dfe83c7fbb640105dd1f))
+* **update:** remove stray template configs and flag the old timezone ([99a6bf6](https://github.com/first-fluke/oh-my-agent/commit/99a6bf68aa51d485c69137bc4e0b088ba8253510))
+
+
+### Documentation
+
+* **cli:** describe qa verification as having no mechanical checks ([c07b62d](https://github.com/first-fluke/oh-my-agent/commit/c07b62d06bd7d80489ef299d3ab36e8ffce0e3d3))
+
+## [11.0.3](https://github.com/first-fluke/oh-my-agent/compare/web-v11.0.2...web-v11.0.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **cli:** name the replacement for removed command spellings ([d1b2eae](https://github.com/first-fluke/oh-my-agent/commit/d1b2eae662007ccd9b6b805b9a8e43f9e508a8b2))
+* **explain:** date artifacts in the configured timezone ([f2b2342](https://github.com/first-fluke/oh-my-agent/commit/f2b2342caac886232dbb68ea787696dc7d053d33))
+* **install:** stop shipping maintainer defaults to every install ([2a8826d](https://github.com/first-fluke/oh-my-agent/commit/2a8826d3f564cad65e550eb4750b398b361442d0))
+
+
+### Documentation
+
+* sync supported agents, the spec, and the READMEs with the code ([fd4ae27](https://github.com/first-fluke/oh-my-agent/commit/fd4ae27270163cc3486962ba8748f4148f9be455))
+
+## [11.0.2](https://github.com/first-fluke/oh-my-agent/compare/web-v11.0.1...web-v11.0.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **hooks:** persist workflows invoked as slash commands ([a4f5975](https://github.com/first-fluke/oh-my-agent/commit/a4f5975c6afba0befc2a784884ef3542f69711d3))
+
+
+### Documentation
+
+* **web:** document the global oma install and slash persistence ([fec9970](https://github.com/first-fluke/oh-my-agent/commit/fec9970786bbfe98ef7b09c9b4d14e648268711e))
+
+## [11.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v11.0.0...web-v11.0.1) (2026-10-14)
+
+
+### Documentation
+
+* **cli:** regenerate the registry and note hidden internal commands ([2869c83](https://github.com/first-fluke/oh-my-agent/commit/2869c83a42d3de4f0ca388046e6cfa8141bc6f81))
+
+## [11.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v10.0.1...web-v11.0.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `oma skills matrix` is rejected like the other plural spellings; use `oma skill matrix`.
+
+### Bug Fixes
+
+* **cli:** publish skills matrix as skill matrix ([52ae343](https://github.com/first-fluke/oh-my-agent/commit/52ae343dbd20dfd3551d8fd7a995d4827a021eb8))
+
+## [10.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v10.0.0...web-v10.0.1) (2026-10-14)
+
+
+### Documentation
+
+* **i18n:** sync 11 locales with the improved web docs ([1a08546](https://github.com/first-fluke/oh-my-agent/commit/1a0854625389c43787e5c8794ce5f2c296f96d15))
+* **web:** add diagrams, decision tables, and a glossary ([cc4a891](https://github.com/first-fluke/oh-my-agent/commit/cc4a891ba19af10b98b77686c514ea8b351cd839))
+
+## [10.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v9.0.0...web-v10.0.0) (2026-10-11)
+
+
+### ⚠ BREAKING CHANGES
+
+* **emit:** Root plugin skills now require the shared skills tree. Use OMA preset installation instead of npx skills or APM installation.
+
+### Bug Fixes
+
+* **emit:** share resources once in full plugin packages ([0f7024e](https://github.com/first-fluke/oh-my-agent/commit/0f7024ea329d2cc7ab8b9d9fadb5e175048b204d))
+
+## [9.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v8.0.0...web-v9.0.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **security:** replace the oma-deepsec skill and /deepsec workflow with oma-security and /security without compatibility aliases. Deepsec remains the default source scanning engine.
+
+### Features
+
+* **security:** replace deepsec workflow with security ([43200a2](https://github.com/first-fluke/oh-my-agent/commit/43200a28e580055422070d4ca62bfb0d8d0a2299))
+
+## [8.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v7.2.0...web-v8.0.0) (2026-10-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **home:** OMA_HOME selects the global data home rather than a project installation target. Global storage now uses ~/.oma by default; old paths require migration and are not read as runtime fallbacks.
+
+### Features
+
+* **home:** unify global storage and default memory setup ([b3607ff](https://github.com/first-fluke/oh-my-agent/commit/b3607ffbb4551e29e1e0523079be30edd5888d10))
+
+
+### Bug Fixes
+
+* **schedule:** preserve internal services during orphan pruning ([663574c](https://github.com/first-fluke/oh-my-agent/commit/663574c50c3652c6b257aaa4958323e4043d9edf))
+
+## [7.2.0](https://github.com/first-fluke/oh-my-agent/compare/web-v7.1.3...web-v7.2.0) (2026-10-08)
+
+
+### Features
+
+* **state:** capture and verify agent decisions ([b4d76a7](https://github.com/first-fluke/oh-my-agent/commit/b4d76a7185d1a25fe1fc2071f58871684fafa5db))
+
+## [7.1.3](https://github.com/first-fluke/oh-my-agent/compare/web-v7.1.2...web-v7.1.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **verify:** bind evidence to exact task and run receipts ([859c300](https://github.com/first-fluke/oh-my-agent/commit/859c300128372bc5db271827ef7de8302413de10))
+
+## [7.1.2](https://github.com/first-fluke/oh-my-agent/compare/web-v7.1.1...web-v7.1.2) (2026-10-05)
+
+
+### Documentation
+
+* **cli:** document explain lint and the template option ([8a7a85c](https://github.com/first-fluke/oh-my-agent/commit/8a7a85c3db33b14ad747123c1ca3dcee396bcd41))
+
+## [7.1.1](https://github.com/first-fluke/oh-my-agent/compare/web-v7.1.0...web-v7.1.1) (2026-10-05)
+
+
+### Documentation
+
+* **cli:** document trajectory vendors and explain render ([316e372](https://github.com/first-fluke/oh-my-agent/commit/316e372db30548728f493bb1c7322ec736c96591))
+
+## [7.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v7.0.5...web-v7.1.0) (2026-10-05)
+
+
+### Features
+
+* **state:** add session trajectory viewer ([c59c821](https://github.com/first-fluke/oh-my-agent/commit/c59c8213f308569e458e9c9cb12722da67e3a21a))
+
+## [7.0.5](https://github.com/first-fluke/oh-my-agent/compare/web-v7.0.4...web-v7.0.5) (2026-10-03)
+
+
+### Documentation
+
+* drop stale token figures and fix agent spawn flags ([3cf73e8](https://github.com/first-fluke/oh-my-agent/commit/3cf73e8b8b709246c7021d31126415ab8f083c9f))
+* **i18n:** render CJK bold labels and fix copied table rows ([8c2f1ca](https://github.com/first-fluke/oh-my-agent/commit/8c2f1ca64ea2f0f907e37f380244adca8c47d468))
+* **i18n:** retranslate the ru, vi, and zh CLI references ([2097d8d](https://github.com/first-fluke/oh-my-agent/commit/2097d8dadd532889cc5ddd90e8c9d9fd0a67ab91))
+
+## [7.0.4](https://github.com/first-fluke/oh-my-agent/compare/web-v7.0.3...web-v7.0.4) (2026-10-03)
+
+
+### Documentation
+
+* **cli:** stop the /setup paragraph rendering as a heading ([2076a2d](https://github.com/first-fluke/oh-my-agent/commit/2076a2d46fc1660f79be9baac6dd46c5a9c2ad2c))
+* **i18n:** sync translations with the English docs ([92dd632](https://github.com/first-fluke/oh-my-agent/commit/92dd632aa668559f8f3d86bce9ecfb2f2fbb43c1))
+
+## [7.0.3](https://github.com/first-fluke/oh-my-agent/compare/web-v7.0.2...web-v7.0.3) (2026-10-03)
+
+
+### Bug Fixes
+
+* **agents:** raise the subagent turn limit to 100 ([f4945be](https://github.com/first-fluke/oh-my-agent/commit/f4945be84e256297830a3318a7b0d8d45c0b3c59))
+
+
+### Documentation
+
+* lead new users through one scoped first task ([b96655e](https://github.com/first-fluke/oh-my-agent/commit/b96655eaabe5690e2bec7474275cf9b15e5a9a41))
+
+## [7.0.2](https://github.com/first-fluke/oh-my-agent/compare/web-v7.0.1...web-v7.0.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **agent:** run codex subagents in the workspace-write sandbox ([60db173](https://github.com/first-fluke/oh-my-agent/commit/60db1730d2b02a85b1d5fc7449d9dee4b41972cd))
+* **hook:** drop only duplicate deliveries from a second registration ([f0d5ed3](https://github.com/first-fluke/oh-my-agent/commit/f0d5ed33b90ff0bc3584f28d18ed1a9ae5f9473f))
+* **hook:** require explicit triggers for persistent workflows ([40d61f4](https://github.com/first-fluke/oh-my-agent/commit/40d61f4e470b0dd2903f721971127f8e8c7bf093))
+* **update:** install from the checksum-verified release asset ([5101552](https://github.com/first-fluke/oh-my-agent/commit/510155295a72dbf5e38141a3fbb26b0dbcb99617))
+
+## [7.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v7.0.0...web-v7.0.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **hooks:** hide native-search bypass from project source ([c8f4f9b](https://github.com/first-fluke/oh-my-agent/commit/c8f4f9b5a12cd7ab89e252db4ceff2c99c30a7c8))
+
+## [7.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.10.2...web-v7.0.0) (2026-09-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **video:** the `video.remotion` config key is now `video.hyperframes`, and `--compositor remotion` is replaced by `--compositor hyperframes`.
+
+### Features
+
+* **video:** replace remotion compositor with hyperframes ([55a7461](https://github.com/first-fluke/oh-my-agent/commit/55a74610917fa4ab2430dede816103163403ea38))
+
+## [6.10.2](https://github.com/first-fluke/oh-my-agent/compare/web-v6.10.1...web-v6.10.2) (2026-09-22)
+
+
+### Bug Fixes
+
+* **hooks:** allow native search in provider-excluded paths ([#806](https://github.com/first-fluke/oh-my-agent/issues/806)) ([da6cc67](https://github.com/first-fluke/oh-my-agent/commit/da6cc678071b61a8b6283958c585902a07de4947))
+
+## [6.10.1](https://github.com/first-fluke/oh-my-agent/compare/web-v6.10.0...web-v6.10.1) (2026-09-21)
+
+
+### Documentation
+
+* **cli:** replace removed -m/--model spawn flag with --vendor ([#804](https://github.com/first-fluke/oh-my-agent/issues/804)) ([90e426d](https://github.com/first-fluke/oh-my-agent/commit/90e426d85460a473ce04c24c5d5ba2d2f61318a9))
+* lead install CTA with npx skills add ([#801](https://github.com/first-fluke/oh-my-agent/issues/801)) ([51cbf62](https://github.com/first-fluke/oh-my-agent/commit/51cbf62513b6b2eab178fbfa6e3c924f8f3390cf))
+
+## [6.10.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.9.3...web-v6.10.0) (2026-09-19)
+
+
+### Features
+
+* **link:** manage AGENTS.md only and retire CLAUDE.md OMA block ([f81c5a4](https://github.com/first-fluke/oh-my-agent/commit/f81c5a4c661b314d721a57a95fa952c9ea4b8b00))
+
+## [6.9.3](https://github.com/first-fluke/oh-my-agent/compare/web-v6.9.2...web-v6.9.3) (2026-09-19)
+
+
+### Bug Fixes
+
+* **schedule:** keep pre-rename OS registrations working and resync stale jobs ([428e80e](https://github.com/first-fluke/oh-my-agent/commit/428e80e93fa9e4e6e9776e755ee57af4ba5cd929))
+
+## [6.9.2](https://github.com/first-fluke/oh-my-agent/compare/web-v6.9.1...web-v6.9.2) (2026-09-18)
+
+
+### Documentation
+
+* **i18n:** add ja and zh harness-evolution guides and harden source link ([99ef73b](https://github.com/first-fluke/oh-my-agent/commit/99ef73bcafcb465cde403e072c4464fd7de45bae))
+* **i18n:** add Korean harness-evolution guide and sidebar entry ([f8de2a9](https://github.com/first-fluke/oh-my-agent/commit/f8de2a93684c7f79448a005e0fc6d97619fb59cc))
+
+## [6.9.1](https://github.com/first-fluke/oh-my-agent/compare/web-v6.9.0...web-v6.9.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **link:** refuse project-mode link and update from HOME ([8e9465b](https://github.com/first-fluke/oh-my-agent/commit/8e9465b4ba7e0e1ba267b6993c2d29c11e3b6641))
+
+## [6.9.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.8.1...web-v6.9.0) (2026-09-18)
+
+
+### Features
+
+* **hooks:** enforce code-intelligence provider with PreToolUse guard ([b5a5598](https://github.com/first-fluke/oh-my-agent/commit/b5a5598a38f08e7acf9f945d75dc5aee7ed16260))
+
+## [6.8.1](https://github.com/first-fluke/oh-my-agent/compare/web-v6.8.0...web-v6.8.1) (2026-09-15)
+
+
+### Documentation
+
+* **i18n:** add harness incident guides for all locales ([e41fd5e](https://github.com/first-fluke/oh-my-agent/commit/e41fd5e749c2ea205d08a0b883627ef67afd2f58))
+
+## [6.8.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.7.0...web-v6.8.0) (2026-09-15)
+
+
+### Features
+
+* **qwen:** support native agents and reinforce serena hooks ([b2340ee](https://github.com/first-fluke/oh-my-agent/commit/b2340eedd1f9d75699f7a83306da0d0a8460bbff))
+
+
+### Bug Fixes
+
+* **qwen:** align hooks with the shared code intelligence primer ([23a2b15](https://github.com/first-fluke/oh-my-agent/commit/23a2b15186aad795053ec18e29f26d31daec71b1))
+
+## [6.7.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.6.0...web-v6.7.0) (2026-09-15)
+
+
+### Features
+
+* **harness:** add budgeted project skill evolution ([23484f1](https://github.com/first-fluke/oh-my-agent/commit/23484f17f9c14014c25c6d7cd6ac9168e7d4ee91))
+
+
+### Bug Fixes
+
+* **docs:** resolve harness links across locales ([dea8fdb](https://github.com/first-fluke/oh-my-agent/commit/dea8fdb0734a202160df75d6f90677496b11bc71))
+
+## [6.6.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.5.0...web-v6.6.0) (2026-09-14)
+
+
+### Features
+
+* **hooks:** announce harness changes once at session start ([e289ff2](https://github.com/first-fluke/oh-my-agent/commit/e289ff2f871d98d335b02081de5db59a22f98783))
+* **skills:** adopt the meta-optimized procedure and surface harness evolution ([3388a33](https://github.com/first-fluke/oh-my-agent/commit/3388a33edcd004a5a83fdc4dca6d5e9901e0f788))
+* **skills:** narrate promotions and show the evolution loop in doctor ([27907b1](https://github.com/first-fluke/oh-my-agent/commit/27907b1d64b653ba595a0f1d679347a9ebbd25c6))
+
+
+### Bug Fixes
+
+* **skills:** keep evolution procedure out of the eval fixtures updates clear ([1680ef7](https://github.com/first-fluke/oh-my-agent/commit/1680ef7e3664ae2aa1e3f40b39e5b6126749d21e))
+
+## [6.5.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.4.0...web-v6.5.0) (2026-09-14)
+
+
+### Features
+
+* **agent:** preserve run output so failures can become incidents ([c77e405](https://github.com/first-fluke/oh-my-agent/commit/c77e4059bb92c04075ca5062798908322f58b15a))
+* **eval:** account vendor-reported tokens and cost per dispatch ([d949f97](https://github.com/first-fluke/oh-my-agent/commit/d949f973455dd2b2d87b06de051e90e6057fadf8))
+* **harness:** add incident regression capture and evidence replay ([6617108](https://github.com/first-fluke/oh-my-agent/commit/6617108258c1067fa4fc591ad5c4d1c153984c6b))
+* **harness:** capture failed runs as incidents from their task contracts ([26d2632](https://github.com/first-fluke/oh-my-agent/commit/26d26325e1899ccdb91b97fedb90c61d7c18db34))
+* **harness:** promote incidents to skill fixtures and close the feedback loop ([5809e63](https://github.com/first-fluke/oh-my-agent/commit/5809e633f00f8ee29d2e340ac3715bc2b94cb5de))
+* **harness:** record execution conditions, env allowlist, and arm traces ([815339f](https://github.com/first-fluke/oh-my-agent/commit/815339f2fb869f5cdcab39193c564b71d7c86c3c))
+* **harness:** scan failed agent runs for uncaptured incidents ([cec500c](https://github.com/first-fluke/oh-my-agent/commit/cec500ca73c01abd9d8d521ea183094203843afd))
+* **skills:** declare default meta-optimization anchors in the constitution ([25eb649](https://github.com/first-fluke/oh-my-agent/commit/25eb6492b02f389655e2e596cf0717ca781fc645))
+* **skills:** enforce protected eval isolation and promotion gates ([929de1a](https://github.com/first-fluke/oh-my-agent/commit/929de1aa7fe6b11aefe7e27cd6d063a872c64340))
+* **skills:** final test as non-regression with per-task evidence ([d333b7b](https://github.com/first-fluke/oh-my-agent/commit/d333b7bc6664cd363649c223db4dd9186eaa90b8))
+* **skills:** held-in/held-out acceptance and confirmed negative transfer ([5a286ca](https://github.com/first-fluke/oh-my-agent/commit/5a286caf044922ae508f56ff4e48e4205efe8ad6))
+* **skills:** make the evolution procedure an artifact with a constitution ([c31d95b](https://github.com/first-fluke/oh-my-agent/commit/c31d95b49935ba1eb667b529383d888c961a7288))
+* **skills:** measure skill routing and record promotion lineage ([f1e021f](https://github.com/first-fluke/oh-my-agent/commit/f1e021ff4865e44bf07c180d28baabdabe274325))
+* **skills:** meta-optimize the evolution procedure on held-out skills ([cd89010](https://github.com/first-fluke/oh-my-agent/commit/cd89010213ba3cb214614535431f710bf5162106))
+* **skills:** meter live optimization against the constitution budget ([1734db2](https://github.com/first-fluke/oh-my-agent/commit/1734db22091e09acd80cad21cb19b9653d51f0d1))
+* **skills:** repeated eval trials with paired intervals and grouped splits ([027eced](https://github.com/first-fluke/oh-my-agent/commit/027eced346974ec0c4f3b4a2d6906d2c1fe342f4))
+* **skills:** report model calls per verified improvement ([31faf4c](https://github.com/first-fluke/oh-my-agent/commit/31faf4cac877ce69f856eaecaf1d8e676f9a6bd7))
+* **skills:** select maintainer evidence by learning value ([0c35866](https://github.com/first-fluke/oh-my-agent/commit/0c3586646328361d63c6e00b667144c263308e33))
+
+
+### Bug Fixes
+
+* **harness:** read the answer out of preserved run envelopes and route incidents to skills ([1a48496](https://github.com/first-fluke/oh-my-agent/commit/1a4849646ae18b1bbabf7da2000aa64856a58893))
+* **skills:** allow 180s per eval dispatch ([cca995d](https://github.com/first-fluke/oh-my-agent/commit/cca995de938aae3e5c374f1a66c25018e1f212be))
+* **skills:** fall back to a cross-domain neighbor sample for negative transfer ([356710e](https://github.com/first-fluke/oh-my-agent/commit/356710ea16c996166ca6ea78af2d17674c769fdf))
+* **skills:** retry a timed-out eval dispatch once ([c4695b5](https://github.com/first-fluke/oh-my-agent/commit/c4695b5e81b1157d3fc161b9614e57f4473d6f4c))
+
+
+### Performance
+
+* **skills:** run live eval dispatches through a bounded parallel pool ([e539eb1](https://github.com/first-fluke/oh-my-agent/commit/e539eb17e0d8c57b4d156605a0c844ea87beb70f))
+
+
+### Documentation
+
+* **cli:** list skill promotions, rollback, --trials, and --routing ([01b0e91](https://github.com/first-fluke/oh-my-agent/commit/01b0e91a3445a7517551d574204238eb4663303a))
+* **skills:** document meta-optimization concurrency ([09200a9](https://github.com/first-fluke/oh-my-agent/commit/09200a94efa0fa4450889614339a61ba7267d65e))
+* **skills:** note blocked inner runs and headroom in meta-optimization ([b8b917b](https://github.com/first-fluke/oh-my-agent/commit/b8b917bd43fe927b2ce7be51b26c9e78bcefe114))
+
+## [6.4.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.3.6...web-v6.4.0) (2026-09-12)
+
+
+### Features
+
+* **providers:** register gortex project and excludes on install/update ([0963c30](https://github.com/first-fluke/oh-my-agent/commit/0963c307ecd9878ba5f97fb6051dcbe398024fdf))
+
+## [6.3.6](https://github.com/first-fluke/oh-my-agent/compare/web-v6.3.5...web-v6.3.6) (2026-09-12)
+
+
+### Bug Fixes
+
+* **skills:** simplify prompts and context loading ([7e4c0d1](https://github.com/first-fluke/oh-my-agent/commit/7e4c0d1960c5b050ea239e0dc342ba40a219fcd6))
+
+## [6.3.5](https://github.com/first-fluke/oh-my-agent/compare/web-v6.3.4...web-v6.3.5) (2026-09-10)
+
+
+### Documentation
+
+* **cli:** remove command count and version snapshots ([4a9c1d9](https://github.com/first-fluke/oh-my-agent/commit/4a9c1d92b5c44ef41878870ecc704e3b25428557))
+
+## [6.3.4](https://github.com/first-fluke/oh-my-agent/compare/web-v6.3.3...web-v6.3.4) (2026-09-10)
+
+
+### Documentation
+
+* **web:** expand guides across all locales ([e2852d5](https://github.com/first-fluke/oh-my-agent/commit/e2852d516b045929576fcecc1e560c700dd2d9ac))
+
+## [6.3.3](https://github.com/first-fluke/oh-my-agent/compare/web-v6.3.2...web-v6.3.3) (2026-09-09)
+
+
+### Bug Fixes
+
+* **agent:** update codex write-mode flag ([484e399](https://github.com/first-fluke/oh-my-agent/commit/484e3993f9c60ecfdc530155ef01579d487b8ed4))
+
+## [6.3.2](https://github.com/first-fluke/oh-my-agent/compare/web-v6.3.1...web-v6.3.2) (2026-09-09)
+
+
+### Documentation
+
+* **web:** fix capability providers link ([855a578](https://github.com/first-fluke/oh-my-agent/commit/855a57836907bc90efc9e181e894a4109d527c7e))
+
+## [6.3.1](https://github.com/first-fluke/oh-my-agent/compare/web-v6.3.0...web-v6.3.1) (2026-09-08)
+
+
+### Documentation
+
+* **i18n:** refine awkward literal translation of axis and dimension in Korean docs ([a9e8156](https://github.com/first-fluke/oh-my-agent/commit/a9e8156e58e4f6e3fd173152608d923262c46153))
+* update code-intelligence providers, cue config, and vendor matrix ([3c18f72](https://github.com/first-fluke/oh-my-agent/commit/3c18f72eddef40a6f797e8240e52622dec48a092))
+
+## [6.3.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.2.0...web-v6.3.0) (2026-09-08)
+
+
+### Features
+
+* **cli:** add free provider routing and local config overrides ([7ae1ad1](https://github.com/first-fluke/oh-my-agent/commit/7ae1ad1c84882a83710b70d12b2b94a4d51caf78))
+
+## [6.2.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.1.0...web-v6.2.0) (2026-09-08)
+
+
+### Features
+
+* **agent:** add checkpoint-gated vendor failover ([8a16eb3](https://github.com/first-fluke/oh-my-agent/commit/8a16eb384e70550691028603e00d7a7bce315988))
+* **state:** add global session discovery and profile commands ([8e48491](https://github.com/first-fluke/oh-my-agent/commit/8e484916fd0172513d61ccccfa7e718a01288792))
+
+## [6.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v6.0.1...web-v6.1.0) (2026-09-06)
+
+
+### Features
+
+* **config:** add CUE support and automatic vendor model selection ([b3e38e9](https://github.com/first-fluke/oh-my-agent/commit/b3e38e9d3802211c00b73f16b90264b578e81fb4))
+
+## [6.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v6.0.0...web-v6.0.1) (2026-09-06)
+
+
+### Documentation
+
+* **workflows:** clarify selection guidance across all locales ([161e24f](https://github.com/first-fluke/oh-my-agent/commit/161e24f99dd0e13dd59a742353c5fb19ec915238)), closes [#665](https://github.com/first-fluke/oh-my-agent/issues/665)
+
+## [6.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v5.1.1...web-v6.0.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** Colon commands, former command aliases and renamed option spellings are removed. Use the command mapping in docs/cli-command-standardization.md. The describe command reports canonical paths only. After upgrading, run oma schedule sync to rewrite OS jobs and oma link or oma update to refresh project hook wrappers.
+
+### Features
+
+* **cli:** standardize command paths and remove legacy syntax ([43b3fc7](https://github.com/first-fluke/oh-my-agent/commit/43b3fc71c15ddbc2228e85df1e1a977fb2cd44ca))
+
+## [5.1.1](https://github.com/first-fluke/oh-my-agent/compare/web-v5.1.0...web-v5.1.1) (2026-09-05)
+
+
+### Documentation
+
+* remove playwright references from markdown guidance ([2ffa537](https://github.com/first-fluke/oh-my-agent/commit/2ffa5374f726f58ce81aa588d8252001f27eea26))
+
+## [5.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v5.0.0...web-v5.1.0) (2026-08-30)
+
+
+### Features
+
+* **skills:** add persistent WikiSkill evolution ([f437140](https://github.com/first-fluke/oh-my-agent/commit/f437140ef8491270edabb63692dd49743c20f46d))
+
+
+### Documentation
+
+* **skills:** document WikiSkill evolution ([9f2c331](https://github.com/first-fluke/oh-my-agent/commit/9f2c331b388a387f11d4047c55a2b260df00a4c6))
+
+## [5.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v4.2.5...web-v5.0.0) (2026-08-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **market:** `oma market harvest|score|fuse|cluster|render| discover-competitors` and OMA_MARKET_MOCK fixture replay are removed; use `oma market run` (last30days flags, `--mock` for offline runs).
+
+### Features
+
+* **diagram:** add archify diagram engine with always-latest managed install ([5da4b9e](https://github.com/first-fluke/oh-my-agent/commit/5da4b9e3be800c98931a00a3adfb3def3733f1ff))
+* **market:** run research on the always-latest last30days engine ([8bc9e91](https://github.com/first-fluke/oh-my-agent/commit/8bc9e91fe9d9d40b78c20c8435891fe5690f2741))
+* **video:** author Remotion compositions per run on the latest Remotion ([88eb9b0](https://github.com/first-fluke/oh-my-agent/commit/88eb9b0d81773aa34992e383b8f49bc4c6825bd0))
+
+## [4.2.5](https://github.com/first-fluke/oh-my-agent/compare/web-v4.2.4...web-v4.2.5) (2026-08-27)
+
+
+### Bug Fixes
+
+* **hooks:** stop writing Grok state rules files ([37bf25d](https://github.com/first-fluke/oh-my-agent/commit/37bf25d644e6bb44cfc4e982d0bc6f1985e52be4))
+
+## [4.2.4](https://github.com/first-fluke/oh-my-agent/compare/web-v4.2.3...web-v4.2.4) (2026-08-23)
+
+
+### Refactoring
+
+* **skills:** standardize capability-based skill names ([b35d07c](https://github.com/first-fluke/oh-my-agent/commit/b35d07c403e191fa8b933807dda75ce2bf38ef85))
+
+## [4.2.3](https://github.com/first-fluke/oh-my-agent/compare/web-v4.2.2...web-v4.2.3) (2026-08-20)
+
+
+### Documentation
+
+* **i18n:** fix corrupted model_preset key across locales ([0b9e53e](https://github.com/first-fluke/oh-my-agent/commit/0b9e53e763c7616ef56d4ce225fad74c878c61e5))
+* **i18n:** review korean docs and sync with english source ([8a93dd8](https://github.com/first-fluke/oh-my-agent/commit/8a93dd8d451668aea897e1ba467e238a678946b6))
+* reference oma-translator language profiles ([d5063fe](https://github.com/first-fluke/oh-my-agent/commit/d5063feb895b89df3168457312ba45cf11a9aa63))
+
+## [4.2.2](https://github.com/first-fluke/oh-my-agent/compare/web-v4.2.1...web-v4.2.2) (2026-08-16)
+
+
+### Bug Fixes
+
+* **vendors:** treat opencode as authed when any provider has a credential ([0ac6762](https://github.com/first-fluke/oh-my-agent/commit/0ac6762448c19131a23dda307c9eff78ee83946c))
+
+## [4.2.1](https://github.com/first-fluke/oh-my-agent/compare/web-v4.2.0...web-v4.2.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* **doctor:** check the row's opencode provider in --profile ([1f3bd1b](https://github.com/first-fluke/oh-my-agent/commit/1f3bd1b25d538a2d513e04c9a2cd66029fd60910)), closes [#699](https://github.com/first-fluke/oh-my-agent/issues/699)
+
+## [4.2.0](https://github.com/first-fluke/oh-my-agent/compare/web-v4.1.3...web-v4.2.0) (2026-08-14)
+
+
+### Features
+
+* **harness:** add isolated harness evaluation ([f3f4393](https://github.com/first-fluke/oh-my-agent/commit/f3f43930917cbf2f103108af0a903133a88c81b8))
+
+## [4.1.3](https://github.com/first-fluke/oh-my-agent/compare/web-v4.1.2...web-v4.1.3) (2026-08-13)
+
+
+### Bug Fixes
+
+* **skills:** reject stale rollout replay in skill eval ([0356e5d](https://github.com/first-fluke/oh-my-agent/commit/0356e5df21fb0502270e4f5706268037c682c41d))
+
+
+### Documentation
+
+* replace the token-savings claim with measured, reproducible numbers ([1661967](https://github.com/first-fluke/oh-my-agent/commit/166196759c01d2591141e67c5fb9c83dcd95a78f))
+* **skills:** point the loading policy at resources that exist ([74e0aac](https://github.com/first-fluke/oh-my-agent/commit/74e0aac464222ee63d5e21a621d94d7994abb670))
+* **skills:** replace unreachable context budget with measured costs ([87e77ee](https://github.com/first-fluke/oh-my-agent/commit/87e77ee08e233eac7ffa8a294a018fc2d3b6ba34))
+* state token savings as overhead reduction, not total tokens ([62de0cf](https://github.com/first-fluke/oh-my-agent/commit/62de0cfb02a660d8e8a7162f33e988dacae84612))
+
+## [4.1.2](https://github.com/first-fluke/oh-my-agent/compare/web-v4.1.1...web-v4.1.2) (2026-08-12)
+
+
+### Documentation
+
+* reposition readme around mechanical verification ([1894e3a](https://github.com/first-fluke/oh-my-agent/commit/1894e3a7359506e17c42498056fb33278794efbe))
+
+## [4.1.1](https://github.com/first-fluke/oh-my-agent/compare/web-v4.1.0...web-v4.1.1) (2026-08-06)
+
+
+### Documentation
+
+* **cli:** document goal:set, spawn exit 3, and stop-gate integration ([b74514a](https://github.com/first-fluke/oh-my-agent/commit/b74514ac4756b8785f1599fcdd42d62779833576))
+
+## [4.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v4.0.3...web-v4.1.0) (2026-08-01)
+
+
+### Features
+
+* **orchestrate:** create a plan inline when none is usable ([faaab26](https://github.com/first-fluke/oh-my-agent/commit/faaab26d6c1a94d8f28c76dcb1811230f4352513)), closes [#665](https://github.com/first-fluke/oh-my-agent/issues/665)
+
+## [4.0.3](https://github.com/first-fluke/oh-my-agent/compare/web-v4.0.2...web-v4.0.3) (2026-07-30)
+
+
+### Bug Fixes
+
+* **cli:** resolve install root in link instead of process.cwd() ([ee52eb5](https://github.com/first-fluke/oh-my-agent/commit/ee52eb57a371aefc2ef3fcba878edc7172a4777e)), closes [#658](https://github.com/first-fluke/oh-my-agent/issues/658)
+
+
+### Documentation
+
+* use relative paths for global-install cross-links ([0b82227](https://github.com/first-fluke/oh-my-agent/commit/0b8222763c554c5bae5bb3b8f6941d35f06cf938))
+
+## [4.0.2](https://github.com/first-fluke/oh-my-agent/compare/web-v4.0.1...web-v4.0.2) (2026-07-27)
+
+
+### Documentation
+
+* sync skill docs with removed shared resources ([1d539be](https://github.com/first-fluke/oh-my-agent/commit/1d539bef72fc1074c7bc5afca58e91e74f2c2d4b))
+
+## [4.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v4.0.0...web-v4.0.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* **hooks:** stop baking an install-time oma path into oma-hook.sh ([10754d4](https://github.com/first-fluke/oh-my-agent/commit/10754d4838e96f7fdee30c8036aaca0c4f33b146))
+
+## [4.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.20.1...web-v4.0.0) (2026-07-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** `serena.mode` now defaults to `bridge` (shared per-project daemon); set `serena.mode: stdio` to restore one serena per session. `serena.bridge_host` / `serena.bridge_url` are removed. chrome-devtools is no longer wired by default — set `mcp.devtools_browsers: [chrome]` to keep it. context7 entries are rewritten from npx to https://mcp.context7.com/mcp.
+
+### Features
+
+* **mcp:** share one serena per project and trim per-session cost ([b9e5a99](https://github.com/first-fluke/oh-my-agent/commit/b9e5a99a6e888b4c7dd18d625f54cd70c65ccbad))
+
+## [3.20.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.20.0...web-v3.20.1) (2026-07-19)
+
+
+### Documentation
+
+* add code-explainer guide and sync workflow references ([0fbafcd](https://github.com/first-fluke/oh-my-agent/commit/0fbafcdf124241ec5fc9259d32ea60bd8db39e6b))
+
+## [3.20.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.19.0...web-v3.20.0) (2026-07-18)
+
+
+### Features
+
+* **cli:** add docs/plans to managed gitignore patterns ([876d881](https://github.com/first-fluke/oh-my-agent/commit/876d881b0b241b37b5470b56fd1b2a43ba2a2645))
+
+
+### Documentation
+
+* **workflows:** align workflow specs with audit findings ([d75672e](https://github.com/first-fluke/oh-my-agent/commit/d75672eb531b7487f761da25406944857a0564e9))
+
+## [3.19.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.18.3...web-v3.19.0) (2026-07-17)
+
+
+### Features
+
+* **agents:** register refactor as canonical agent id ([22b8ff1](https://github.com/first-fluke/oh-my-agent/commit/22b8ff173483d1c55c5971a247093d286bb63743))
+
+
+### Documentation
+
+* **web:** sync ultrawork refine agent naming to refactor agent ([5ea2256](https://github.com/first-fluke/oh-my-agent/commit/5ea2256e6a52574ee7f377518c49d591b4ab3e37))
+
+## [3.18.3](https://github.com/first-fluke/oh-my-agent/compare/web-v3.18.2...web-v3.18.3) (2026-07-17)
+
+
+### Documentation
+
+* **market:** fix phantom commands and sync skill docs with CLI ([32c3c86](https://github.com/first-fluke/oh-my-agent/commit/32c3c868b0bfb8640172a96c2f24bfd82eb9741b))
+
+## [3.18.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.18.1...web-v3.18.2) (2026-07-17)
+
+
+### Documentation
+
+* **web:** drop oma-design examples references across locales ([f89cd12](https://github.com/first-fluke/oh-my-agent/commit/f89cd12a187dcdba0725fa911f9a68043466ede9))
+
+## [3.18.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.18.0...web-v3.18.1) (2026-07-17)
+
+
+### Documentation
+
+* **video:** align skill docs with implementation, add script schema ([0ebb332](https://github.com/first-fluke/oh-my-agent/commit/0ebb332cb5a61bb9f4891f64cc1df6b5aaa2284d))
+* **web:** propagate skill guidance sweep to docs and translations ([307e20a](https://github.com/first-fluke/oh-my-agent/commit/307e20a71bbeccc07b2630f4fd37bb0859137448))
+
+## [3.18.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.8...web-v3.18.0) (2026-07-15)
+
+
+### Features
+
+* **install:** restore opt-in global git config for rerere and defaultBranch ([7da2c7d](https://github.com/first-fluke/oh-my-agent/commit/7da2c7d28a60871885a357289f305b20f7306528))
+
+## [3.17.8](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.7...web-v3.17.8) (2026-07-12)
+
+
+### Documentation
+
+* document skills lint and cite anatomy-to-smells ([e4a6f74](https://github.com/first-fluke/oh-my-agent/commit/e4a6f74b75a7cea7a3a7080e0732acbb2b3147fe))
+* resolve all 84 broken refs flagged by oma docs verify ([2bf619a](https://github.com/first-fluke/oh-my-agent/commit/2bf619a126181304f53d4577a77be67109f6cb13))
+* **web:** retarget memory store paths to .agents/state/memories ([29f27e1](https://github.com/first-fluke/oh-my-agent/commit/29f27e1598e1ff580da0f63197ef608111599dc3))
+* **web:** sync video guide with doctor install flags and --script ([c4443d5](https://github.com/first-fluke/oh-my-agent/commit/c4443d589bb79571e38463edb947c627a85a7ed6))
+
+## [3.17.7](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.6...web-v3.17.7) (2026-07-11)
+
+
+### Documentation
+
+* **web:** document codex hook trust (TOFU) and the one-time /hooks step ([97bcb25](https://github.com/first-fluke/oh-my-agent/commit/97bcb25509371168302a1df055bb5211a69dfe8a))
+
+## [3.17.6](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.5...web-v3.17.6) (2026-07-10)
+
+
+### Bug Fixes
+
+* **web:** inline docusaurus tsconfig to drop removed baseUrl ([160afe8](https://github.com/first-fluke/oh-my-agent/commit/160afe865889d7d5c259de31c4ae84bbfd54420d))
+
+## [3.17.5](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.4...web-v3.17.5) (2026-07-07)
+
+
+### Documentation
+
+* **schedule:** fix rounding example and document windows cron shapes ([a1f00bd](https://github.com/first-fluke/oh-my-agent/commit/a1f00bd08af8057851006bed0467f077f4916ae4))
+
+## [3.17.4](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.3...web-v3.17.4) (2026-07-04)
+
+
+### Documentation
+
+* **web:** add pi extension recipe for unregistered zai GLM models ([a7dae2c](https://github.com/first-fluke/oh-my-agent/commit/a7dae2c87dc3efa14fcd1348ed341a2fb953150f))
+
+## [3.17.3](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.2...web-v3.17.3) (2026-07-04)
+
+
+### Documentation
+
+* **web:** document serena.auto_update in config semantics ([2fba9ac](https://github.com/first-fluke/oh-my-agent/commit/2fba9aca5fa45a14077929fb9c1fa0cf183e65b7))
+
+## [3.17.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.1...web-v3.17.2) (2026-07-04)
+
+
+### Documentation
+
+* **web:** drop evaluator-tuning references from skills docs ([9a228cb](https://github.com/first-fluke/oh-my-agent/commit/9a228cbaf39ef458a01c87a6703f59b5a5e43232))
+
+## [3.17.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.17.0...web-v3.17.1) (2026-06-22)
+
+
+### Refactoring
+
+* **contracts:** relocate generated API contracts out of skill SSOT ([275a475](https://github.com/first-fluke/oh-my-agent/commit/275a475cbc1602bf8a548e264287d4fdfdde932a))
+
+
+### Documentation
+
+* **guide:** document ZCode vendor integration ([3f2b85d](https://github.com/first-fluke/oh-my-agent/commit/3f2b85d4ce645ba1b8be43b6541ea4034eab56e0))
+
+## [3.17.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.16.0...web-v3.17.0) (2026-06-18)
+
+
+### Features
+
+* **workflows:** replace pdf workflow with category-routed convert ([e3dca07](https://github.com/first-fluke/oh-my-agent/commit/e3dca0770441f22f7e2567b4066776c40fa96ae8))
+
+## [3.16.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.15.0...web-v3.16.0) (2026-06-17)
+
+
+### Features
+
+* **kimi:** integrate Kimi Code CLI as a first-class vendor ([cb5561a](https://github.com/first-fluke/oh-my-agent/commit/cb5561af9cf0d83da39e71ac52f84863258bc1cf))
+
+## [3.15.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.14.1...web-v3.15.0) (2026-06-16)
+
+
+### Features
+
+* **schedule:** add cross-vendor OS-level scheduler ([14eaa55](https://github.com/first-fluke/oh-my-agent/commit/14eaa550f8ad6b3fb2aaa1e6df1fc517e0dcfdc9))
+
+## [3.14.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.14.0...web-v3.14.1) (2026-06-16)
+
+
+### Documentation
+
+* **cli:** document serena reaper commands and config ([605634c](https://github.com/first-fluke/oh-my-agent/commit/605634c6a1b3bb68f5e60862aa20ede64b132591))
+
+## [3.14.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.13.1...web-v3.14.0) (2026-06-15)
+
+
+### Features
+
+* add OpenCode vendor support for subagent dispatch ([#544](https://github.com/first-fluke/oh-my-agent/issues/544)) ([fa224ac](https://github.com/first-fluke/oh-my-agent/commit/fa224ace76d3d7a6be9b7392ee820cfc05f3a7c2))
+
+
+### Documentation
+
+* document OpenCode per-agent model routing ([a8009f6](https://github.com/first-fluke/oh-my-agent/commit/a8009f67ea59c71ba8d6e799224eb334cca97230))
+* **i18n:** sync OpenCode docs across 11 locales ([c10007a](https://github.com/first-fluke/oh-my-agent/commit/c10007a9990836dbb63c0c4fc8d08739d9e7523c))
+
+## [3.13.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.13.0...web-v3.13.1) (2026-06-13)
+
+
+### Documentation
+
+* sync README and web/docs with actual CLI and skill/workflow surface ([5de4fc3](https://github.com/first-fluke/oh-my-agent/commit/5de4fc3ea700b17c92f7ba6bfa8861c943ec9a71))
+
+## [3.13.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.12.0...web-v3.13.0) (2026-06-12)
+
+
+### Features
+
+* **update:** append missing template config keys to oma-config.yaml ([424fd9e](https://github.com/first-fluke/oh-my-agent/commit/424fd9e8f7755b334caf6c195fedb64e88a71105))
+
+## [3.12.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.11.2...web-v3.12.0) (2026-06-11)
+
+
+### Features
+
+* **agents:** rename canonical agent id retrieval to explore ([3a26950](https://github.com/first-fluke/oh-my-agent/commit/3a2695019a34125e36f2efc86662d7c31e59e38e))
+
+## [3.11.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.11.1...web-v3.11.2) (2026-06-11)
+
+
+### Bug Fixes
+
+* **install:** stop writing project-level .gemini/antigravity-cli ([dce2373](https://github.com/first-fluke/oh-my-agent/commit/dce237312b0642b72b37548141857586989af962))
+
+## [3.11.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.11.0...web-v3.11.1) (2026-06-10)
+
+
+### Documentation
+
+* record per-vendor hook materialization and dispatch architecture ([65cf5a7](https://github.com/first-fluke/oh-my-agent/commit/65cf5a7a2e24f66732a7b7e24f6c64a3e8d893b4))
+
+## [3.11.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.10.3...web-v3.11.0) (2026-06-08)
+
+
+### Features
+
+* **agent:** add pi as a per-agent dispatch vendor ([319bafe](https://github.com/first-fluke/oh-my-agent/commit/319bafe69137ebe5a7a4a1e1de908a849ad5e85f))
+
+## [3.10.3](https://github.com/first-fluke/oh-my-agent/compare/web-v3.10.2...web-v3.10.3) (2026-06-07)
+
+
+### Documentation
+
+* document oma hook abi, debug path, and migration ([4ae137d](https://github.com/first-fluke/oh-my-agent/commit/4ae137df077266f429a0f8255507e28cadd9fd75))
+
+## [3.10.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.10.1...web-v3.10.2) (2026-06-05)
+
+
+### Bug Fixes
+
+* **skills:** isolate eval baseline so utility lift is honest ([54e8b2a](https://github.com/first-fluke/oh-my-agent/commit/54e8b2a10aa05556a4dd4a7a37ea94105d5164fb))
+
+## [3.10.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.10.0...web-v3.10.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **docs:** pin pattern-field anchor slug across locales ([6e0dea3](https://github.com/first-fluke/oh-my-agent/commit/6e0dea39c1d55ea9d7c0ae83d254c562c3a62d8b))
+
+## [3.10.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.9.1...web-v3.10.0) (2026-06-05)
+
+
+### Features
+
+* **antigravity:** disable agy telemetry by default ([9f35a37](https://github.com/first-fluke/oh-my-agent/commit/9f35a37075cab46a5ec83c0e0125683d2251f3bf))
+
+
+### Bug Fixes
+
+* **docs:** use absolute doc links so the ko build passes ([a66ec28](https://github.com/first-fluke/oh-my-agent/commit/a66ec28a7f9f3e76c91752e36537fd01f589c0d8))
+
+## [3.9.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.9.0...web-v3.9.1) (2026-06-04)
+
+
+### Documentation
+
+* document oma skills opt ([2d10f3e](https://github.com/first-fluke/oh-my-agent/commit/2d10f3e1f8e1c730b8e13fcf61c30788db6e412f))
+
+## [3.9.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.8.2...web-v3.9.0) (2026-06-04)
+
+
+### Features
+
+* **video:** oma-video skill, /video workflow, and key-optional CLI ([#482](https://github.com/first-fluke/oh-my-agent/issues/482)) ([846f0c1](https://github.com/first-fluke/oh-my-agent/commit/846f0c1347d7879b429c47450d85652a248513c3))
+
+## [3.8.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.8.1...web-v3.8.2) (2026-06-04)
+
+
+### Documentation
+
+* document oma skills eval and eval fixture convention ([7633ee9](https://github.com/first-fluke/oh-my-agent/commit/7633ee90a1b1c2d5682936fc47b075e019df2030))
+
+## [3.8.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.8.0...web-v3.8.1) (2026-06-04)
+
+
+### Documentation
+
+* document Swift native iOS support across en and i18n ([fc0cbb0](https://github.com/first-fluke/oh-my-agent/commit/fc0cbb01d6ed2b2f59a2ef4329069c79b3e047d1))
+
+## [3.8.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.7.1...web-v3.8.0) (2026-06-01)
+
+
+### Features
+
+* **web:** add copy markdown plugin to docs site ([4f26f22](https://github.com/first-fluke/oh-my-agent/commit/4f26f2230a5de85139ea197eb444ee25d1a9ed86))
+
+## [3.7.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.7.0...web-v3.7.1) (2026-05-30)
+
+
+### Documentation
+
+* **i18n:** refine korean docs for natural phrasing ([fc4112f](https://github.com/first-fluke/oh-my-agent/commit/fc4112f0c06b3fea801ce0e613ce0bcc542d56d3))
+
+## [3.7.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.6.0...web-v3.7.0) (2026-05-27)
+
+
+### Features
+
+* add first-class Grok support ([cb57928](https://github.com/first-fluke/oh-my-agent/commit/cb5792813c34c799455fa37bb0e97088cd8ee889))
+
+## [3.6.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.5.6...web-v3.6.0) (2026-05-25)
+
+
+### Features
+
+* **recap:** add antigravity parser and extract shared parser utils ([d314a20](https://github.com/first-fluke/oh-my-agent/commit/d314a20dc0d5e5145649c78dd12413865965e690))
+
+## [3.5.6](https://github.com/first-fluke/oh-my-agent/compare/web-v3.5.5...web-v3.5.6) (2026-05-25)
+
+
+### Documentation
+
+* humanize tone across all locales ([3a3acd0](https://github.com/first-fluke/oh-my-agent/commit/3a3acd0505ab9c3340543de9b8821009ef8eb20d))
+
+## [3.5.5](https://github.com/first-fluke/oh-my-agent/compare/web-v3.5.4...web-v3.5.5) (2026-05-24)
+
+
+### Documentation
+
+* global-install + oma-config-semantics guides with 10-locale i18n ([b618fc5](https://github.com/first-fluke/oh-my-agent/commit/b618fc52a9d467699f9a7cf052343e4c9a804eb0))
+
+## [3.5.4](https://github.com/first-fluke/oh-my-agent/compare/web-v3.5.3...web-v3.5.4) (2026-05-22)
+
+
+### Documentation
+
+* remove deprecated gemini from vendor and preset listings ([71915ff](https://github.com/first-fluke/oh-my-agent/commit/71915ff65a064730a7cdc753625f6c028ed662e6))
+
+## [3.5.3](https://github.com/first-fluke/oh-my-agent/compare/web-v3.5.2...web-v3.5.3) (2026-05-20)
+
+
+### Documentation
+
+* sync quick start + installation docs for serena bootstrap ([80be2a2](https://github.com/first-fluke/oh-my-agent/commit/80be2a2e7228bfb9008c5237091f88d6c91065b4))
+
+## [3.5.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.5.1...web-v3.5.2) (2026-05-20)
+
+
+### Documentation
+
+* document antigravity (agy) CLI as first-class vendor ([0703e91](https://github.com/first-fluke/oh-my-agent/commit/0703e91988ee008c6c79a54ff67d35b70d956b40))
+* **i18n:** sync antigravity (agy) CLI to 11 locales ([f15ee2d](https://github.com/first-fluke/oh-my-agent/commit/f15ee2d2dfb6b0ec98f741577d573fef60e9b18c))
+
+## [3.5.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.5.0...web-v3.5.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* **i18n:** use 'AI 네이티브 개발' in Korean docs ([dcf2ca6](https://github.com/first-fluke/oh-my-agent/commit/dcf2ca6ea5e1dc7c3661b7fa0d812655b43d9480))
+* **repo:** force LF line endings to unblock Windows CI lint ([78e83a4](https://github.com/first-fluke/oh-my-agent/commit/78e83a48d6c267a94cec0c673713ceb9ea33f173))
+
+## [3.5.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.4.1...web-v3.5.0) (2026-05-19)
+
+
+### Features
+
+* **cli:** align Cursor Agent auth, models, and dispatch ([bb37391](https://github.com/first-fluke/oh-my-agent/commit/bb3739150f8ed1d9f9d42e65090d04a56220a45c))
+
+## [3.4.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.4.0...web-v3.4.1) (2026-05-17)
+
+
+### Documentation
+
+* update preset name references to new vendor scheme ([2f49afb](https://github.com/first-fluke/oh-my-agent/commit/2f49afbab98e733fccef180cd43e1b25d46c4487))
+
+## [3.4.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.3.0...web-v3.4.0) (2026-05-17)
+
+
+### Features
+
+* **serena:** migrate to uv tool install with per-vendor MCP contexts ([d79e51d](https://github.com/first-fluke/oh-my-agent/commit/d79e51dbd44362f18bd7e2978a163e026cfa94b6))
+
+
+### Bug Fixes
+
+* **web:** satisfy PWA install criteria with maskable icons and screenshots ([b154cde](https://github.com/first-fluke/oh-my-agent/commit/b154cdea0a115fea9792f3d7e2bf1b129f6bb52e))
+
+## [3.3.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.2.0...web-v3.3.0) (2026-05-17)
+
+
+### Features
+
+* **web:** enable PWA via @docusaurus/plugin-pwa ([da1362e](https://github.com/first-fluke/oh-my-agent/commit/da1362e39423de6998ec85272c5975fcea859762))
+
+
+### Refactoring
+
+* **web:** drop "make engineer great again" motto from landing ([c4d39d5](https://github.com/first-fluke/oh-my-agent/commit/c4d39d57fbd25de713a2663539183bcb7f0b1b4d))
+
+## [3.2.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.1.3...web-v3.2.0) (2026-05-17)
+
+
+### Features
+
+* **web:** replace favicons and icons with oma mascot ([b65d220](https://github.com/first-fluke/oh-my-agent/commit/b65d220c64be5c5658ac0e6ea6998fbd394dc58b))
+
+## [3.1.3](https://github.com/first-fluke/oh-my-agent/compare/web-v3.1.2...web-v3.1.3) (2026-05-17)
+
+
+### Documentation
+
+* **i18n:** translate Why oh-my-agent to 11 locales ([eef50e2](https://github.com/first-fluke/oh-my-agent/commit/eef50e2ca17fff461aca8537ef6b5311f3eac804))
+* **web:** add Why oh-my-agent positioning page ([d29f9dd](https://github.com/first-fluke/oh-my-agent/commit/d29f9ddfc38120e98dd86cae9b45772d51234120))
+* **web:** document oma vault, --isolation=worktree, and stats cost telemetry ([8f63c07](https://github.com/first-fluke/oh-my-agent/commit/8f63c077d5e8a694a11ae3a9bf9729c3937251c9))
+
+## [3.1.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.1.1...web-v3.1.2) (2026-05-16)
+
+
+### Performance
+
+* **web:** enable Docusaurus Faster (Rspack/SWC) and drop webpack override ([139378f](https://github.com/first-fluke/oh-my-agent/commit/139378f497531c677a8e62136c445a59bb4e5881))
+
+## [3.1.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.1.0...web-v3.1.1) (2026-05-15)
+
+
+### Documentation
+
+* **oma-pm:** unify plan secondary output to result-pm.md ([f797932](https://github.com/first-fluke/oh-my-agent/commit/f797932fcb9ff85bccbd5dfef0489310b1a2fe27))
+
+## [3.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v3.0.6...web-v3.1.0) (2026-05-12)
+
+
+### Features
+
+* add telemetry opt-in to oma-config for all vendors ([22265cd](https://github.com/first-fluke/oh-my-agent/commit/22265cd913310693418cfb1d04cdeaf04f00ecd5))
+
+## [3.0.6](https://github.com/first-fluke/oh-my-agent/compare/web-v3.0.5...web-v3.0.6) (2026-05-11)
+
+
+### Documentation
+
+* **benchmarks:** sync oma score to 80.6 across all locales ([fd66b76](https://github.com/first-fluke/oh-my-agent/commit/fd66b76b9408df36aebd15898bbdcc644f5f60a1))
+
+## [3.0.5](https://github.com/first-fluke/oh-my-agent/compare/web-v3.0.4...web-v3.0.5) (2026-05-11)
+
+
+### Documentation
+
+* **workflows:** document /deepsec across all locales ([41a68df](https://github.com/first-fluke/oh-my-agent/commit/41a68dff35ace3cd6143d6727e507de7498e022f))
+
+## [3.0.4](https://github.com/first-fluke/oh-my-agent/compare/web-v3.0.3...web-v3.0.4) (2026-05-09)
+
+
+### Documentation
+
+* list cursor-only preset across guides and i18n locales ([afe62b4](https://github.com/first-fluke/oh-my-agent/commit/afe62b481a2b75f0bfe2e4a14aaa6660ab1dbedc))
+* **web:** add benchmarks page with 11 locale translations ([ce62a09](https://github.com/first-fluke/oh-my-agent/commit/ce62a09efd7ca3e1e64ddab05f74180b4a8378ff))
+
+## [3.0.3](https://github.com/first-fluke/oh-my-agent/compare/web-v3.0.2...web-v3.0.3) (2026-05-09)
+
+
+### Documentation
+
+* **i18n:** restructure em-dashes in CJK locales (ko/ja/zh) ([8d426d5](https://github.com/first-fluke/oh-my-agent/commit/8d426d5c3e2f968a97e3034a2f75aa73da29aaa5))
+* **i18n:** translate per-agent-models.md into 11 locales ([d8331b5](https://github.com/first-fluke/oh-my-agent/commit/d8331b5e307e9358fd1adb54c73e7db9cc363ff7))
+* **image-generation:** add 'Use as a Skill' section in 12 languages ([cfbc97f](https://github.com/first-fluke/oh-my-agent/commit/cfbc97f0caa5edc1b20f4b52910d89cb71adfa24))
+
+## [3.0.2](https://github.com/first-fluke/oh-my-agent/compare/web-v3.0.1...web-v3.0.2) (2026-05-09)
+
+
+### Documentation
+
+* **i18n:** catch up 11 locales with current English source ([9b52e69](https://github.com/first-fluke/oh-my-agent/commit/9b52e694a0c6395d7200d58c78d17bf595c6197a))
+
+## [3.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v3.0.0...web-v3.0.1) (2026-05-09)
+
+
+### Documentation
+
+* **i18n:** sync 11 locales with auto-detection updates ([e08b953](https://github.com/first-fluke/oh-my-agent/commit/e08b95316bd8250a350288d860b0156e06d389a2))
+* **workflows:** document patterns field and language convention ([977457f](https://github.com/first-fluke/oh-my-agent/commit/977457f1da99c3e2b5ec5012b9593266435e82b6))
+
+## [3.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v2.1.1...web-v3.0.0) (2026-05-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** remove oma export command
+
+### Refactoring
+
+* **cli:** remove oma export command ([f2cb7a7](https://github.com/first-fluke/oh-my-agent/commit/f2cb7a75d8b06009743b0422685a1e57de8c3b05))
+
+## [2.1.1](https://github.com/first-fluke/oh-my-agent/compare/web-v2.1.0...web-v2.1.1) (2026-05-08)
+
+
+### Documentation
+
+* **web:** correct project-structure for Docusaurus and workspace commands ([4823a3b](https://github.com/first-fluke/oh-my-agent/commit/4823a3b6a02278cd240e736b7a0a179edd1440f2))
+
+## [2.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v2.0.2...web-v2.1.0) (2026-05-04)
+
+
+### Features
+
+* **models:** upgrade default models to gpt-5.5 and qwen3.6-plus ([bbcd072](https://github.com/first-fluke/oh-my-agent/commit/bbcd07273fd817083d8d86a7021b5efd7ef9c34f))
+
+## [2.0.2](https://github.com/first-fluke/oh-my-agent/compare/web-v2.0.1...web-v2.0.2) (2026-04-30)
+
+
+### Refactoring
+
+* **workflows:** merge /exec-plan into /plan with structured docs/plans/ layout ([e634da3](https://github.com/first-fluke/oh-my-agent/commit/e634da3b8d55bd7d5f4815b2a4742f9d8561f929))
+
+## [2.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v2.0.0...web-v2.0.1) (2026-04-25)
+
+
+### Documentation
+
+* **web:** add oma-image generation guide in 12 languages ([e8d51c0](https://github.com/first-fluke/oh-my-agent/commit/e8d51c0420422bc573a2ea1d6d89f6982c524387))
+
+## [2.0.0](https://github.com/first-fluke/oh-my-agent/compare/web-v1.2.1...web-v2.0.0) (2026-04-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** agent_cli_mapping removed, replaced by model_preset + agents in .agents/oma-config.yaml. .agents/config/defaults.yaml and .agents/config/models.yaml no longer exist (built-in presets ship in the CLI package; user models inline in oma-config.yaml). The --update-defaults flag is removed. Migration 008 auto-converts legacy projects on oma install / oma update.
+
+### Features
+
+* **config:** consolidate to model_preset single-file config ([294b8df](https://github.com/first-fluke/oh-my-agent/commit/294b8df23b1dc3b9407f64041d0d421aa1caec5a))
+
+## [1.2.1](https://github.com/first-fluke/oh-my-agent/compare/web-v1.2.0...web-v1.2.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* **image:** distribute auto-forward reference mandate in skill bundle ([d2e5ff9](https://github.com/first-fluke/oh-my-agent/commit/d2e5ff9fefcd045c9bc34e497932151e02688ccf))
+* **image:** distribute auto-forward reference mandate in skill bundle ([b9b7287](https://github.com/first-fluke/oh-my-agent/commit/b9b72874a9bedb0bfeed7c73e67c4d4df14557e9))
+
+## [1.2.0](https://github.com/first-fluke/oh-my-agent/compare/web-v1.1.3...web-v1.2.0) (2026-04-24)
+
+
+### Features
+
+* **image:** add --reference flag with sanitized unique filenames ([0f0031b](https://github.com/first-fluke/oh-my-agent/commit/0f0031b4ed69e4fce9e972895f2b9359f5a7d4e6))
+
+
+### Documentation
+
+* **image:** document -r/--reference flag in web CLI reference ([d3c1878](https://github.com/first-fluke/oh-my-agent/commit/d3c1878cc7bbd5d33ae4893952b2a47c9276f56a))
+* sync README and web docs with current CLI surface ([34c9f52](https://github.com/first-fluke/oh-my-agent/commit/34c9f521de0ba96770434456d0c332993aebcaa8))
+
+## [1.1.3](https://github.com/first-fluke/oh-my-agent/compare/web-v1.1.2...web-v1.1.3) (2026-04-24)
+
+
+### Bug Fixes
+
+* **typecheck,biome:** resolve pre-existing errors ([9948947](https://github.com/first-fluke/oh-my-agent/commit/99489478debdc274decf04102fddea0b5ee0d24e))
+
+## [1.1.2](https://github.com/first-fluke/oh-my-agent/compare/web-v1.1.1...web-v1.1.2) (2026-04-24)
+
+
+### Documentation
+
+* **per-agent-models:** fix installer claim and doctor sample output ([c92a1f4](https://github.com/first-fluke/oh-my-agent/commit/c92a1f43946fc82179ab54f5f3c55330121d4cfc))
+* **per-agent-models:** sync EN source + 11 locales to oma-config.yaml ([6adada3](https://github.com/first-fluke/oh-my-agent/commit/6adada36f5eec1c6c55cad885c6feb7c16831fb5))
+* **per-agent-models:** sync EN source + 11 locales to oma-config.yaml ([680968f](https://github.com/first-fluke/oh-my-agent/commit/680968f01fa0ce240d0eef533c2ac0f7aeff63de))
+
+## [1.1.1](https://github.com/first-fluke/oh-my-agent/compare/web-v1.1.0...web-v1.1.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* address code review on PR [#270](https://github.com/first-fluke/oh-my-agent/issues/270) ([a9d22d5](https://github.com/first-fluke/oh-my-agent/commit/a9d22d5d265027ddc5c879f4cd823bee7c1a130a))
+* **io:** honor oma-config.yaml for per-agent dispatch and quota cap ([bbe96b3](https://github.com/first-fluke/oh-my-agent/commit/bbe96b3dd5afdcc16f6f69055874aa54f97afd98))
+* **io:** honor oma-config.yaml in resolveAgentPlan and loadQuotaCap ([15ea4d9](https://github.com/first-fluke/oh-my-agent/commit/15ea4d9305f8b6c7b386c291d17ab6fa327326c4))
+
+
+### Documentation
+
+* drop RARDO codename, fix slug bugs, consolidate oma-config.yaml references ([ef6630e](https://github.com/first-fluke/oh-my-agent/commit/ef6630ef13f4ce470e3db41cd6f0085ab881f02e))
+
+## [1.1.0](https://github.com/first-fluke/oh-my-agent/compare/web-v1.0.1...web-v1.1.0) (2026-04-23)
+
+
+### Features
+
+* **install:** version-gated defaults.yaml upgrades ([94299e6](https://github.com/first-fluke/oh-my-agent/commit/94299e62055d61aff33fda4e5a8e0de8883af4bf))
+* P0 — Registry + Config + Dispatch + Doctor ([4f89b8a](https://github.com/first-fluke/oh-my-agent/commit/4f89b8a90b8a338f6972e8c3416f0a6820498e19))
+
+
+### Documentation
+
+* **web:** add per-agent models guide across 12 locales ([aae25bd](https://github.com/first-fluke/oh-my-agent/commit/aae25bdfb579e8a0438fee0f7a6a2329cf1e25cb))
+
+## [1.0.1](https://github.com/first-fluke/oh-my-agent/compare/web-v1.0.0...web-v1.0.1) (2026-04-21)
+
+
+### Documentation
+
+* reflect oma-observability + 5 missing agents and fix counts ([67e9da0](https://github.com/first-fluke/oh-my-agent/commit/67e9da03000a84636872a88c5315e33361941442))

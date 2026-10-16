@@ -1,0 +1,59 @@
+{
+  "name": "oh-my-agent-workspace",
+  "version": "20.4.0",
+  "private": true,
+  "homepage": "https://firstfluke.com/oh-my-agent",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/first-fluke/oh-my-agent"
+  },
+  "bugs": {
+    "url": "https://github.com/first-fluke/oh-my-agent/issues"
+  },
+  "workspaces": [
+    "cli",
+    "web"
+  ],
+  "scripts": {
+    "build": "bun run --cwd cli build",
+    "dev": "bun run --cwd cli dev",
+    "lint": "bun run --cwd cli lint",
+    "lint:fix": "bun run --cwd cli lint:fix",
+    "prepare": "husky",
+    "sns": "bun scripts/sns/index.ts",
+    "sns:devto": "bun scripts/sns/devto/index.ts",
+    "sns:qiita": "bun scripts/sns/qiita/index.ts",
+    "test": "bun run --cwd cli test",
+    "test:orca": "node --test integrations/orca/plugin.test.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
+    "docs:check": "node cli/scripts/sync-readme.mjs --check && node cli/scripts/generate-cli-reference.mjs --check && node cli/scripts/generate-skill-catalog.mjs --check",
+    "bench:oma-hook": "bun run cli/__bench__/oma-hook-latency.bench.ts",
+    "web:dev": "bun run --cwd web dev",
+    "web:build": "bun run --cwd web build",
+    "test:dsh": "node --test integrations/dsh/*.test.mjs"
+  },
+  "overrides": {
+    "@types/node": "^26"
+  },
+  "engines": {
+    "node": ">=26.0"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "skills": [
+      ".agents/skills"
+    ]
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.6",
+    "@commitlint/cli": "21.2.1",
+    "@commitlint/config-conventional": "21.2.0",
+    "husky": "9.1.7",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "jsonrepair": "^3.15.0"
+  }
+}

@@ -1,0 +1,170 @@
+---
+title: "Регрессионные кейсы инцидентов"
+sidebar_label: Регрессионные кейсы инцидентов
+description: Зафиксируйте наблюдаемый сбой агента, сохраните его доказательства и оцените candidate harness относительно явного контракта регрессии.
+---
+
+# Регрессионные кейсы инцидентов
+
+`oma harness incident` связывает наблюдаемый сбой с регрессионным кейсом и последующей оценкой candidate. Он записывает наблюдения отдельно от причинных гипотез. Сам по себе завершившийся ошибкой процесс не доказывает, что инцидент вызван моделью.
+
+Диаграмма показывает жизненный цикл инцидента. Продвижение питает оптимизацию skill; экспорт питает оценку harness.
+
+```mermaid
+flowchart TD
+  RUN["Failed, blocked, or partial agent run"] --> SCAN["incident scan<br/>--skeleton RUN_ID"]
+  SCAN --> SPEC["Edit the spec: expected_checks,<br/>initial_workspace"]
+  SPEC --> CAP["incident capture --spec --run"]
+  RUN -->|"feedback --scan-runs<br/>(run has a task contract)"| CAP
+  CAP --> MAN[".agents/results/incidents/ID/incident.json"]
+  MAN --> SHOW["incident show"]
+  MAN --> EXP["incident export<br/>(needs initial_workspace)"]
+  EXP --> REP["incident reproduce --candidate<br/>(live, inspect, rescore, fixture-replay, rerun)"]
+  MAN --> PRO["incident promote, or harness feedback"]
+  PRO --> FIX[".agents/eval/SKILL/incident-ID.yaml"]
+  FIX --> OPT["harness feedback --live or --apply<br/>runs skill optimize"]
+```
+
+## Поиск кандидатов {#find-candidates}
+
+```bash
+oma harness incident scan            # failed/blocked/partial runs with no captured incident
+oma harness incident scan --json
+oma harness incident scan --skeleton <run-id> > incidents/run-failure.json
+```
+
+1. `oma harness incident scan` перечисляет отслеживаемые запуски со статусом `failed`, `blocked` или `partial` и отбрасывает любой запуск, на который уже ссылается записанный инцидент через `source.runId`. `--limit <n>` ограничивает список. Запуски берутся из записей запусков проекта в каталоге состояния профиля OMA (по умолчанию `~/.oma/u/0/projects/<project-id>/agent-runs/`, где `<project-id>` — SHA-256 канонического пути проекта; `OMA_STATE_HOME` и `OMA_PROFILE` меняют корень и профиль). `oma agent spawn` и `oma agent parallel` сохраняют последние 64 КиБ журнала каждого запуска рядом с его записью как `<run-id>.output.txt`.
+2. `--skeleton <run-id>` печатает спецификацию с id, агентом, исходным запуском, наблюдаемым сбоем, кодом выхода и, если runner сохранил его, хвостом вывода агента. Поле `expected_checks` оставляют как `TODO`, потому что корректное поведение — это решение, которое сканирование принять не может.
+3. Замените проверку-заглушку. Чтобы инцидент можно было запустить, также добавьте `"initial_workspace": "<dir>"`, указывающий на копию файлов задачи в том виде, в каком они были до запуска. Без него инцидент можно записать и продвинуть, но `incident export` и `reproduce` останавливаются с ошибкой `Cannot export a runnable regression: initial workspace evidence is missing`.
+4. Выполните запись с `--run <run-id>`, чтобы prompt, идентификатор запуска и отпечаток workspace сохранились. `capture --run` импортирует сохранённый вывод как наблюдение, когда спецификация его не содержит, а `incident promote` может проверить против него выведенную fixture.
+
+## Автоматическая запись завершившегося ошибкой запуска
+
+```bash
+oma harness feedback --scan-runs            # capture, promote, report
+oma harness feedback --scan-runs --live     # and optimize the affected skills
+```
+
+Завершившийся ошибкой, заблокированный или частичный запуск, задача которого имела контракт, не требует написанной вручную спецификации. Ожидаемое поведение — это критерии приёмки контракта, определённые ещё до запуска; критерии, покрытые неуспешным подтверждением проверки, и есть невыполненный набор, либо каждый критерий, если запуск вообще не проверялся. opt-agent переписывает невыполненные критерии в рубрику judge (`PASS only if …`), judge оценивает собственный сохранённый вывод запуска против этой рубрики, и инцидент записывается только тогда, когда этот вывод не проходит: рубрика, которую сбой проходит, не захватывает сбой. Спецификация записывается под `.agents/results/incidents/_specs/<id>.json` и сохраняется вместе с идентификатором запуска, неся рубрику как проверку приёмки `output_judge`. Запуски без сохранённого вывода, без prompt или без контракта перечисляются как не подлежащие записи, с указанием причины.
+
+`output_judge` — это оцениваемый контракт. Механический оценщик harness сообщает его как не оценённый; его назначение — регрессионная fixture skill, которую `incident promote` выводит из него с той же рубрикой.
+
+## Запись инцидента {#capture-an-incident}
+
+Сохраните JSON-спецификацию внутри проекта:
+
+```json
+{
+  "schema_version": 1,
+  "id": "incomplete-result",
+  "summary": "The agent reported success while the result remained incomplete",
+  "prompt": "Complete the task and update result.json",
+  "agent": "backend",
+  "observed": {
+    "failure": "result.json still contained complete=false",
+    "output": "success",
+    "exit_code": 0
+  },
+  "initial_workspace": "initial",
+  "expected_checks": [
+    {
+      "type": "file_json_equals",
+      "path": "result.json",
+      "pointer": "/complete",
+      "value": true
+    }
+  ],
+  "evidence_files": ["original-output.txt"],
+  "dependencies": []
+}
+```
+
+Пути `initial_workspace`, `evidence_files` и fixture зависимостей указываются относительно файла спецификации. Путь `checker` в проверке команды указывается относительно проекта. Синтаксис проверок совпадает с [Оценка harness](./harness-eval.md). Начальный каталог должен быть предоставленной fixture задачи до запуска, без инструктивных файлов OMA или вендора; оцениваемый harness вносится отдельно.
+
+```bash
+oma harness incident capture --spec incidents/incomplete-result.json --json
+oma harness incident show incomplete-result --json
+
+# Import prompt and observable metadata from an existing local run
+oma harness incident capture --spec incidents/run-failure.json --run <run-id> --json
+```
+
+`--run` принимает ID запуска из списка `oma harness incident scan`; записи запусков хранятся в каталоге состояния профиля, описанном в разделе [Поиск кандидатов](#find-candidates), а не в `.agents/state/`. Он сохраняет идентификатор запуска и сессии, вендора, статус и исходный отпечаток workspace. Предоставленный prompt имеет приоритет над записанным в запуске prompt. `source.trace_id` может связать записанный инцидент с внешним trace, не получая его и не выгружая.
+
+Записанный манифест хранится в `.agents/results/incidents/<id>/incident.json`. Он включает начальный снимок, если он предоставлен, hash исходных доказательств и файлов checker, проверки приёмки, ограничения и hash манифеста. Существующие ID нельзя перезаписать. Чувствительный текст наблюдения обезличивается; обезличивание сообщается как ограничение точного воспроизведения. Сбор снимков отклоняет неподдерживаемые файлы и имеет пределы на размер файла, их количество и общий размер. Ссылки на доказательства сохраняют hash и пути, а не копии каждого упомянутого исходного файла.
+
+Необязательный объект `cause` содержит `category`, `hypothesis`, `confidence` и `evidence`. Категории: `model`, `tool`, `config`, `context`, `application`, `evaluator` и `unknown`. Если его опустить, причина остаётся `unknown`.
+
+## Продвижение в fixture skill
+
+```bash
+oma harness incident promote <id> [--skill <id>] [--draft] [--force] --json
+```
+
+Записанный инцидент становится регрессионной fixture для skill, который выполнял отказавший агент, чтобы `oma skill optimize` мог исправить skill относительно неё. Skill выбирается маршрутизацией prompt инцидента по каталогу установленных skill — тем же зондирующим запросом на уровне описания, который использует `oma skill eval --routing` (один вызов модели); когда маршрутизация ничего не выбирает, используется первая запись `skills:` из определения агента в `.agents/agents/<agent>.md`, а иначе — установленный skill с именем `oma-<agent>`. `--skill` перезаписывает этот выбор, и продвижение записывает, кто из трёх источников решил (`attribution`). Fixture записывается в `.agents/eval/<skill>/incident-<id>.yaml` с `group: incident-<id>`, чтобы она никогда не пересекала разбиение train/validation/test, а продвижение записывается рядом с инцидентом как `promotion.json`. Инцидент продвигается один раз.
+
+Проверяющий код берётся из проверок приёмки. Когда каждая проверка — это `output_contains`, fixture представляет собой детерминированный `assert`. Иначе проверки не могут выполняться в оценке skill (там нет ни файлов, ни команд), поэтому `--draft` запрашивает у opt-agent рубрику judge, начинающуюся с `PASS only if` и называющую наблюдаемый сбой. В обоих случаях fixture допускается только когда записанный провалившийся вывод её не проходит: assert, который наблюдаемый вывод уже удовлетворяет, или набросанную рубрику, которую judge на этом выводе проходит, отклоняют, потому что это не регрессионный кейс. Инцидент без наблюдаемого вывода нельзя проверить, и ему нужен `--force`, что записывается как ограничение.
+
+## Замыкание цикла
+
+```bash
+oma harness feedback                 # promote every unpromoted incident, report what changed (routing, drafting, and judge model calls)
+oma harness feedback --live          # also run one optimization epoch per affected skill (dry-run)
+oma harness feedback --apply --json  # also write edits that pass every gate (implies --live)
+```
+
+`--incident <ids...>` ограничивает запуск перечисленными инцидентами. `--max-epochs <n>` (по умолчанию 1) задаёт число эпох оптимизации на skill для `--live` и `--apply`.
+
+:::caution Стоимость модели и цель записи
+`feedback` не показывает предварительную оценку стоимости. Даже без `--live` продвижение направляет каждый инцидент к skill с помощью вызова модели и может составлять и оценивать рубрики. `--live` и `--apply` запускают `oma skill optimize --live --yes` для каждого затронутого skill, а `--apply` записывает управляемый `SKILL.md` напрямую, включая skill `oma-*`, которые перезаписывает `oma update`. Для подтверждённого запуска с предварительной оценкой используйте `oma skill optimize --skill <id> --live`; для цикла с бюджетом и project overlay используйте [эволюцию harness проекта](./harness-evolution.md).
+:::
+
+`feedback` — это цикл обратной связи развёртывания в одной команде: с `--scan-runs` сначала записывается каждый незаписанный завершившийся ошибкой запуск с контрактом (см. выше), затем каждый записанный инцидент без fixture продвигается (при необходимости с составлением рубрик), пострадавшие skill группируются, а с `--live` каждый из них один раз оптимизируется против увеличенной suite в рамках обычных шлюзов (приёмка held-in/held-out, подтверждённый негативный перенос, финальный тест, которым владеет runner). Отчёт в `.agents/results/feedback/feedback-<ts>.json` перечисляет продвижения, пропущенные инциденты с причинами и результат каждого skill с диффом, так что цепочка от наблюдаемого сбоя до кандидатской правки — это одна аудируемая запись. Для работы по расписанию с общим лимитом вызовов модели, сохраняемыми повторными попытками и project overlay для skill включите [эволюцию harness проекта](./harness-evolution.md). Снимок состояния следующей сессии сообщает о применённых изменениях.
+
+Что остаётся человеческим решением: у запуска без контракта задачи нет записанного ожидаемого поведения, поэтому он перечисляется `incident scan` и записывается только через спецификацию; `--skeleton` составляет её набросок.
+
+## Экспорт и оценка
+
+```bash
+oma harness incident export incomplete-result --json
+oma harness incident reproduce incomplete-result --candidate candidates/fix \
+  --record-file incidents/comparison.json --yes --json
+```
+
+Экспорт материализует сохранённый начальный снимок и exploratory suite из одного кейса. Hash манифеста и идентификатор исходного запуска и trace следуют вместе с задачей в оценку и запись. Изменения в экспортированных файлах, prompt, агенте, проверках или закреплённых исходниках checker делают переиспользование недействительным. Создайте новый ID инцидента, чтобы изменить контракт приёмки.
+
+По умолчанию `reproduce` начинает новое live-сравнение baseline и candidate и записывает его. Обычное подтверждение live-стоимости применяется, если не указан `--yes`. Эта команда использует вендора агента, настроенного для задачи harness, включая Codex; она не навязывает защищённый профиль компилятора оптимизатора skill выполнению задачи.
+
+Экспортированная suite инцидента содержит ровно одну задачу, поэтому `reproduce` всегда печатает `coverage: insufficient` (для вердикта нужны пять оценённых задач), а решение — `INSUFFICIENT`, если только одна из ветвей не завершилась ошибкой dispatch (`FAIL`). Вместо этого читайте строки задач: ID инцидента в `corrected:` означает, что baseline провалился, а candidate прошёл; в `regressed:` — что candidate сломал проходивший кейс; `none` в обоих означает, что ветви вели себя одинаково. В JSON это поля `score.correctedTaskIds` и `score.regressedTaskIds`.
+
+Если начальное состояние не было записано, `capture` и `show` продолжают работать, но экспорт, пригодный к запуску, и воспроизведение выполнения останавливаются с ошибкой отсутствующих доказательств. Текущее рабочее дерево исторического запуска не может установить его исходное состояние. Даже отдельно предоставленный начальный снимок не доказывает эквивалентность тому историческому запуску; отчёт сообщает об этом ограничении.
+
+## Выбор операции с доказательствами
+
+```bash
+oma harness incident reproduce incomplete-result --candidate candidates/fix \
+  --action inspect --record-file incidents/comparison.json --json
+
+oma harness incident reproduce incomplete-result --candidate candidates/fix \
+  --action rescore --record-file incidents/comparison.json --json
+
+oma harness incident reproduce incomplete-result --candidate candidates/fix \
+  --action fixture-replay --record-file incidents/comparison.json \
+  --transcript incidents/tool-responses.json --json
+
+oma harness incident reproduce incomplete-result --candidate candidates/fix \
+  --action rerun --record-file incidents/comparison.json --record --yes --json
+```
+
+| Операция | Что происходит |
+|---|---|
+| `inspect` | Читает и агрегирует сохранённые вердикты. Ни проверки, ни агенты не выполняются. |
+| `rescore` | Применяет текущие проверки вывода и файлов к сохранённым сырым доказательствам. Старые поля pass/fail игнорируются. |
+| `fixture-replay` | Воспроизводит предоставленные данные ответов инструментов и изменения файлов относительно записанного начального состояния. Ни модель, ни процесс инструмента не запускаются. |
+| `rerun` | Начинает фактические вызовы агента baseline и candidate из записанного начального состояния. Это влечёт обычное использование модели. |
+
+Для пересмотренного контракта приёмки создайте отдельную harness suite и используйте `oma harness eval --action rescore` с теми же идентификаторами suite, задачи и инцидента и тем же prompt. Сама экспортированная suite инцидента неизменяема. См. [подробности записи и воспроизведения](./harness-eval.md#reuse-a-recording) — там описаны требования к сырым доказательствам и схема транскрипта инструментов.
+
+Объявляйте внешние зависимости как `{ "name": "service", "repeatability": "fixture|live|unavailable", "reason": "...", "fixture": "response.json" }`. Fixture-зависимость указывает на файл, использующий полную схему транскрипта harness, с ID инцидента в качестве `taskId`. Офлайн-воспроизведение инцидента отклоняет live и unavailable зависимости, отсутствующие fixture-файлы, изменённые hash fixture, отсутствующие именованные ответы, а также изменения запросов, ответов и файлов, отличающиеся от закреплённого транскрипта. Оно по-прежнему не может удостоверить, что автор объявил каждую внешнюю зависимость. Повторный live-запуск также не может гарантировать, что внешний сервис поведёт себя так же, как исторически.
+
+Запись, экспорт и оценка испускают локальные события `harness.incident.*`, связывающие инцидент, hash candidate и baseline, режим выполнения и ID исправленных или регрессировавших задач. Инцидент из одного кейса — это доказательство регрессии, а не замена suite валидации и финального теста. Текущие профили harness сообщают `promotionReady: false`; эти операции не устанавливают изоляцию защищённого финального теста и не продвигают candidate автоматически.

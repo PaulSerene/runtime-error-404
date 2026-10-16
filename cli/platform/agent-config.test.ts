@@ -1,0 +1,418 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it } from "vitest";
+import { EXTENSION_VENDORS, VENDORS } from "../constants/vendors.js";
+import {
+  type AgentSpec,
+  loadAgentPersona,
+  loadExecutionProtocol,
+  type OmaConfig,
+  type OmaDocsConfig,
+  parseOmaConfig,
+} from "./agent-config.js";
+
+// ---------------------------------------------------------------------------
+// agent-config.test.ts
+// Tests for OmaConfig schema (model-preset unified config).
+//
+// Note: parseOmaConfig validates the full schema. The 'agents' override map
+// uses z.record(AgentIdEnum, AgentSpec) which requires all 11 keys when
+// present as a full record — partial overrides are passed as OmaConfig
+// objects directly to resolveAgentPlanFromConfig in runtime-dispatch.test.ts.
+// ---------------------------------------------------------------------------
+
+describe("parseOmaConfig — minimal valid config", () => {
+  it("parses language + model_preset", () => {
+    const yaml = "language: en\nmodel_preset: claude\n";
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.language).toBe("en");
+    expect(result?.model_preset).toBe("claude");
+  });
+
+  it("defaults language to 'en' when absent", () => {
+    const yaml = "model_preset: gemini\n";
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.language).toBe("en");
+  });
+
+  it("parses all optional top-level scalar fields", () => {
+    const yaml = [
+      "language: ko",
+      "model_preset: codex",
+      "date_format: ISO",
+      "timezone: Asia/Seoul",
+      "auto_update_cli: true",
+    ].join("\n");
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.date_format).toBe("ISO");
+    expect(result?.timezone).toBe("Asia/Seoul");
+    expect(result?.auto_update_cli).toBe(true);
+  });
+
+  it("accepts all 6 built-in preset keys", () => {
+    const presets = [
+      "antigravity",
+      "claude",
+      "codex",
+      "qwen",
+      "cursor",
+      "mixed",
+    ];
+    for (const preset of presets) {
+      const result = parseOmaConfig(`language: en\nmodel_preset: ${preset}\n`);
+      expect(result, `preset=${preset} should parse`).not.toBeNull();
+      expect(result?.model_preset).toBe(preset);
+    }
+  });
+});
+
+describe("parseOmaConfig — missing or invalid required fields", () => {
+  it("returns null when model_preset is absent", () => {
+    expect(parseOmaConfig("language: en\n")).toBeNull();
+  });
+
+  it("returns null for empty YAML string", () => {
+    expect(parseOmaConfig("")).toBeNull();
+    expect(parseOmaConfig("   ")).toBeNull();
+  });
+
+  it("returns null for null YAML value (~)", () => {
+    expect(parseOmaConfig("~")).toBeNull();
+  });
+
+  it("returns null when model_preset is empty string", () => {
+    expect(parseOmaConfig("language: en\nmodel_preset: ''\n")).toBeNull();
+  });
+});
+
+describe("parseOmaConfig — custom_presets passthrough", () => {
+  it("passes through custom_presets block", () => {
+    const yaml = [
+      "language: en",
+      "model_preset: my-team",
+      "custom_presets:",
+      "  my-team:",
+      "    extends: claude",
+      "    description: Team preset",
+    ].join("\n");
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.custom_presets?.["my-team"]).toBeDefined();
+  });
+});
+
+describe("parseOmaConfig — vendors", () => {
+  it("accepts the installer's vendor list", () => {
+    const result = parseOmaConfig(
+      "language: en\nmodel_preset: claude\nvendors:\n  - codex\n  - claude\n",
+    );
+    expect(result?.vendors).toEqual(["codex", "claude"]);
+  });
+
+  it("still parses a legacy vendors map", () => {
+    const result = parseOmaConfig(
+      "language: en\nmodel_preset: claude\nvendors:\n  pi:\n    command: pi\n",
+    );
+    expect(result).not.toBeNull();
+  });
+});
+
+describe("parseOmaConfig — models passthrough", () => {
+  it("passes through inline models definition", () => {
+    const yaml = [
+      "language: en",
+      "model_preset: claude",
+      "models:",
+      "  custom-fast:",
+      "    cli: gemini",
+      "    cli_model: gemini-3-flash",
+    ].join("\n");
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.models?.["custom-fast"]).toBeDefined();
+  });
+});
+
+describe("OmaConfig TypeScript interface", () => {
+  it("satisfies OmaConfig with required fields only", () => {
+    const config: OmaConfig = {
+      language: "en",
+      model_preset: "claude",
+    };
+    expect(config.model_preset).toBe("claude");
+    expect(config.agents).toBeUndefined();
+    expect(config.models).toBeUndefined();
+    expect(config.custom_presets).toBeUndefined();
+  });
+
+  it("accepts agents override map as partial record (object shape)", () => {
+    const config: OmaConfig = {
+      language: "en",
+      model_preset: "antigravity",
+      agents: {
+        backend: { model: "openai/gpt-5.4", effort: "high" },
+      },
+    };
+    expect(config.agents?.backend?.model).toBe("openai/gpt-5.4");
+    expect(config.agents?.backend?.effort).toBe("high");
+  });
+
+  it("AgentSpec supports all effort levels", () => {
+    const levels: AgentSpec["effort"][] = [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ];
+    for (const effort of levels) {
+      const spec: AgentSpec = { model: "openai/gpt-5.4", effort };
+      expect(spec.effort).toBe(effort);
+    }
+  });
+
+  it("AgentSpec supports all memory tiers", () => {
+    const tiers: AgentSpec["memory"][] = ["user", "project", "local"];
+    for (const memory of tiers) {
+      const spec: AgentSpec = { model: "anthropic/claude-sonnet-4-6", memory };
+      expect(spec.memory).toBe(memory);
+    }
+  });
+
+  it("AgentSpec supports thinking flag", () => {
+    const spec: AgentSpec = {
+      model: "google/gemini-3-flash",
+      thinking: true,
+    };
+    expect(spec.thinking).toBe(true);
+  });
+});
+
+describe("parseOmaConfig — docs.auto_verify field", () => {
+  it("parses docs.auto_verify: true", () => {
+    const yaml = [
+      "language: en",
+      "model_preset: claude",
+      "docs:",
+      "  auto_verify: true",
+    ].join("\n");
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.docs?.auto_verify).toBe(true);
+  });
+
+  it("parses docs.auto_verify: false", () => {
+    const yaml = [
+      "language: en",
+      "model_preset: claude",
+      "docs:",
+      "  auto_verify: false",
+    ].join("\n");
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.docs?.auto_verify).toBe(false);
+  });
+
+  it("docs field is optional — defaults to undefined when absent", () => {
+    const yaml = "language: en\nmodel_preset: claude\n";
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.docs).toBeUndefined();
+  });
+
+  it("auto_verify is effectively false when docs field is absent", () => {
+    const yaml = "language: en\nmodel_preset: claude\n";
+    const result = parseOmaConfig(yaml);
+    expect(result?.docs?.auto_verify ?? false).toBe(false);
+  });
+
+  it("docs field is optional — docs present without auto_verify", () => {
+    const yaml = ["language: en", "model_preset: claude", "docs: {}"].join(
+      "\n",
+    );
+    const result = parseOmaConfig(yaml);
+    expect(result).not.toBeNull();
+    expect(result?.docs?.auto_verify).toBeUndefined();
+  });
+
+  it("OmaDocsConfig TypeScript interface accepts auto_verify boolean", () => {
+    const docsConfig: OmaDocsConfig = { auto_verify: true };
+    expect(docsConfig.auto_verify).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadExecutionProtocol — execution-protocol parity
+//
+// Regression for: antigravity (agy) spawns reported `crashed` despite success.
+// Root cause was a missing `antigravity.md` execution protocol, so agy received
+// no instruction to write `.serena/memories/result-{agent-id}.md` (the artifact
+// `agent:status` reads). Every vendor reachable via external `oma agent:spawn`
+// must resolve a protocol that instructs writing the result artifact.
+// See .agents/results/bugs/bug-20260529-antigravity-spawn-no-result-artifact.md
+// ---------------------------------------------------------------------------
+
+describe("loadExecutionProtocol — execution-protocol parity", () => {
+  // Repo root, resolved relative to this test file (cli/platform/*.test.ts).
+  const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
+
+  // Vendors that do NOT dispatch via external `oma agent:spawn` and therefore
+  // do not require a `{vendor}.md` execution protocol on this path. Keep this
+  // list — and the justification — tight: anything not listed here is REQUIRED
+  // to have a protocol, derived from the VENDORS source of truth below.
+  //   - claude: runs as a native subagent (Agent tool), not external spawn.
+  //   - cursor: partial-support; result hand-off tracked separately.
+  const PROTOCOL_EXEMPT_VENDORS = new Set(["claude", "cursor"]);
+
+  // Derived from the VENDORS source of truth: adding a vendor there
+  // automatically enrolls it here, so a new vendor cannot be added without
+  // either shipping a protocol or explicitly exempting it above. This is the
+  // guard that prevents the antigravity bug from recurring for future vendors.
+  // EXTENSION_VENDORS (pi) dispatch via external `oma agent:spawn` too, but are
+  // kept out of the canonical VENDORS set. Enroll them explicitly so the result
+  // artifact guard covers them as well.
+  const REQUIRED_PROTOCOL_VENDORS = [
+    ...VENDORS.filter((v) => !PROTOCOL_EXEMPT_VENDORS.has(v)),
+    ...EXTENSION_VENDORS,
+  ];
+
+  it("antigravity protocol documents the headless stdout hand-off", () => {
+    // The crux of the bug: agy `-p` stdout is discarded, so the result file is
+    // the only durable hand-off. The protocol must call this out explicitly.
+    const protocol = loadExecutionProtocol("antigravity", repoRoot);
+    expect(protocol.toLowerCase()).toContain("headless");
+  });
+
+  it.each(REQUIRED_PROTOCOL_VENDORS)(
+    "%s (external-dispatch) protocol resolves and instructs the result artifact write",
+    (vendor) => {
+      const protocol = loadExecutionProtocol(vendor, repoRoot);
+      expect(protocol.length).toBeGreaterThan(0);
+      expect(protocol).toContain(
+        "result-{agentId}-{taskId}-{runId}-{sessionId}.md",
+      );
+    },
+  );
+
+  it.each(REQUIRED_PROTOCOL_VENDORS)(
+    "%s protocol uses the common structured result contract",
+    (vendor) => {
+      const protocol = loadExecutionProtocol(vendor, repoRoot);
+      expect(protocol).toContain("# Agent Result Contract");
+      expect(protocol).toContain("agent verify");
+      expect(protocol).toContain("partial");
+    },
+  );
+
+  it.each(REQUIRED_PROTOCOL_VENDORS)(
+    "%s protocol routes coordination files to the .agents/state/memories store the readers use",
+    (vendor) => {
+      // Path defect found during repro: codex/grok protocols told agents to
+      // write `result-{agent-id}.md` under `.agents/results/`, but every reader
+      // of those coordination files — checkStatus (spawn-status.ts),
+      // findResultFile (verify.ts), and getMemoriesPath (io/memory.ts) — reads
+      // the canonical store. Files written elsewhere are orphaned → `crashed`.
+      const protocol = loadExecutionProtocol(vendor, repoRoot);
+      expect(protocol).toContain(".agents/state/memories");
+      // Coordination artifacts must NOT be routed to `.agents/results/`
+      // (that dir is for human-facing deliverables: plans, bug reports, etc.),
+      // nor to Serena's own memory dir (pinned to `.serena/memories`, which is
+      // now knowledge-only).
+      expect(protocol).toContain(".agents/state/agent-runs/");
+      expect(protocol).not.toContain(".agents/results/progress-");
+      expect(protocol).not.toContain(".agents/results/task-board");
+      expect(protocol).not.toContain(".serena/memories/result-");
+      expect(protocol).not.toContain(".serena/memories/progress-");
+    },
+  );
+
+  it("claude (native) protocol also routes coordination files to .agents/state/memories", () => {
+    // claude is exempt from external-dispatch checks, but the result/progress
+    // readers (io/memory.ts, verify.ts) are shared, so the same path + status
+    // contract applies to the native flow.
+    const protocol = loadExecutionProtocol("claude", repoRoot);
+    expect(protocol).toContain(".agents/state/memories");
+    expect(protocol).toContain(".agents/state/agent-runs/");
+    expect(protocol).toContain("# Agent Result Contract");
+  });
+
+  it("every exempt vendor is still a real VENDOR (no stale exemptions)", () => {
+    // Prevents the exemption list from silently masking a removed/renamed
+    // vendor — keeps the guard honest as VENDORS evolves.
+    for (const vendor of PROTOCOL_EXEMPT_VENDORS) {
+      expect(VENDORS).toContain(vendor);
+    }
+  });
+
+  it("loads the common policy even for a vendor without a transport protocol", () => {
+    expect(loadExecutionProtocol("does-not-exist", repoRoot)).toContain(
+      "# Execution Policy",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadAgentPersona — SSOT persona inlining (pi external dispatch)
+// ---------------------------------------------------------------------------
+
+describe("loadAgentPersona", () => {
+  const roots: string[] = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /** Build a temp project with .agents/oma-config.yaml + one agent source file. */
+  function tempProject(): string {
+    const root = mkdtempSync(join(tmpdir(), "oma-persona-"));
+    roots.push(root);
+    const agentsDir = join(root, ".agents", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "language: en\nmodel_preset: claude\n",
+    );
+    writeFileSync(
+      join(agentsDir, "backend-engineer.md"),
+      "---\nname: backend-engineer\nmodel: sonnet\n---\n\nYou are a Backend Specialist.",
+    );
+    return root;
+  }
+
+  it("resolves the persona body by canonical agent id (backend → backend-engineer)", () => {
+    const root = tempProject();
+    expect(loadAgentPersona("backend", root)).toBe(
+      "You are a Backend Specialist.",
+    );
+  });
+
+  it("resolves by the source file name too (backend-engineer)", () => {
+    const root = tempProject();
+    expect(loadAgentPersona("backend-engineer", root)).toBe(
+      "You are a Backend Specialist.",
+    );
+  });
+
+  it("strips YAML frontmatter from the returned body", () => {
+    const root = tempProject();
+    expect(loadAgentPersona("backend", root)).not.toContain("name:");
+  });
+
+  it("returns empty string when the agent source is not found", () => {
+    const root = tempProject();
+    expect(loadAgentPersona("nonexistent", root)).toBe("");
+  });
+
+  it("returns empty string when there is no .agents project", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-persona-empty-"));
+    roots.push(root);
+    expect(loadAgentPersona("backend", root)).toBe("");
+  });
+});

@@ -1,0 +1,822 @@
+import { execFileSync, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { z } from "zod";
+import { withStateIndexLock } from "../../.agents/hooks/core/state-index-lock.ts";
+import { AGENTS_RESULTS_DIR } from "../constants/paths.js";
+import { listAgentDecisionSubjects } from "./agent-decision-catalog.js";
+import {
+  AgentDecisionSchema,
+  deliverAgentDecisionMemory,
+  RequiredDecisionSchema,
+  recordAgentDecisions,
+  verifyAgentDecisions,
+} from "./agent-decisions.js";
+import type { RequiredDecision } from "./decision-verifier.js";
+import { atomicWriteJson, emitEvent } from "./events.js";
+import { recordHarnessEvolutionEvidence } from "./harness-evolution.js";
+import { runtimeStateDir } from "./project-runtime.js";
+import {
+  contractStillCurrent,
+  loadSessionPlan,
+  loadTaskContract,
+  loadTaskDecisionRequirements,
+  pinSessionPlan,
+  type TaskContract,
+  TaskContractSchema,
+} from "./task-contract.js";
+
+export const AgentClaimSchema = z.object({
+  status: z.enum(["completed", "partial", "blocked", "failed"]),
+  changedFiles: z.array(z.string()),
+  unresolved: z.array(z.string()),
+  artifacts: z.array(z.string()),
+  decisions: z.array(AgentDecisionSchema).optional(),
+  verificationSkipped: z.string().trim().min(10).optional(),
+});
+export type AgentClaim = z.infer<typeof AgentClaimSchema>;
+export interface VerificationReceipt {
+  command: string[];
+  cwd?: string;
+  checkId?: string;
+  startedAt: string;
+  finishedAt: string;
+  exitCode: number | null;
+  before: string;
+  after: string;
+}
+export interface AgentRun {
+  schemaVersion: 1;
+  runId: string;
+  sequence: number;
+  taskId: string;
+  sessionId: string;
+  lineageId?: string;
+  goalId?: string;
+  evidenceRepair?: boolean;
+  agentId: string;
+  vendor: string;
+  runnerPid?: number;
+  workspace: string;
+  artifactRoot: string;
+  startedAt: string;
+  finishedAt?: string;
+  status: "running" | AgentClaim["status"];
+  exitCode?: number | null;
+  before: string;
+  after?: string;
+  checks: VerificationReceipt[];
+  changedFiles: string[];
+  unresolved: string[];
+  artifacts: Record<string, string>;
+  verificationSkipped?: string;
+  decisionEventIds?: string[];
+  decisionEventHashes?: Record<string, string>;
+  requiredDecisions?: RequiredDecision[];
+  contract?: TaskContract;
+  dispatch?: { prompt: string; readOnly?: boolean };
+  resumedFrom?: string;
+  /**
+   * Tail of the agent's captured stdout/stderr, kept beside the run so a
+   * failure can become an incident with its observed output. Absent when the
+   * runner had no log to preserve.
+   */
+  output?: { path: string; bytes: number; truncated: boolean };
+}
+
+const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const RunSchema = z.object({
+  schemaVersion: z.literal(1),
+  runId: z.string().uuid(),
+  sequence: z.number().int().positive(),
+  taskId: z.string().min(1),
+  sessionId: z.string().min(1),
+  lineageId: z.string().min(1).optional(),
+  goalId: z.string().min(1).optional(),
+  evidenceRepair: z.boolean().optional(),
+  agentId: z.string().min(1),
+  vendor: z.string().min(1),
+  runnerPid: z.number().int().positive().optional(),
+  workspace: z.string().min(1),
+  artifactRoot: z.string().min(1),
+  startedAt: z.string().datetime(),
+  finishedAt: z.string().datetime().optional(),
+  status: z.enum(["running", "completed", "partial", "blocked", "failed"]),
+  exitCode: z.number().int().nullable().optional(),
+  before: hashSchema,
+  after: hashSchema.optional(),
+  checks: z.array(
+    z.object({
+      command: z.array(z.string()).min(1),
+      cwd: z.string().optional(),
+      checkId: z.string().optional(),
+      startedAt: z.string().datetime(),
+      finishedAt: z.string().datetime(),
+      exitCode: z.number().int().nullable(),
+      before: hashSchema,
+      after: hashSchema,
+    }),
+  ),
+  changedFiles: z.array(z.string()),
+  unresolved: z.array(z.string()),
+  artifacts: z.record(z.string(), hashSchema),
+  verificationSkipped: z.string().optional(),
+  decisionEventIds: z.array(z.string().min(1)).optional(),
+  decisionEventHashes: z.record(z.string(), hashSchema).optional(),
+  requiredDecisions: z.array(RequiredDecisionSchema).optional(),
+  contract: TaskContractSchema.optional(),
+  dispatch: z
+    .object({ prompt: z.string(), readOnly: z.boolean().optional() })
+    .optional(),
+  resumedFrom: z.string().uuid().optional(),
+  output: z
+    .object({
+      path: z.string().min(1),
+      bytes: z.number().int().nonnegative(),
+      truncated: z.boolean(),
+    })
+    .optional(),
+});
+
+const generated =
+  /^(?:\.agents\/(?:state|results)(?:\/|$)|\.serena\/memories(?:\/|$)|\.opencode\/agents\/oma-spawn-[^/]+\.md$)/;
+function digest(content: string | Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+/** Hash actual contents, including staged/unstaged and untracked files. Runtime
+ * evidence is excluded so writing a receipt cannot invalidate itself. */
+export function workspaceFingerprint(
+  workspace: string,
+  inputs?: string[],
+): string {
+  if (inputs) {
+    const root = resolve(workspace);
+    const hash = createHash("sha256");
+    const visit = (name: string) => {
+      if (generated.test(name) || name === ".git" || name.startsWith(".git/"))
+        return;
+      const file = resolve(root, name);
+      hash.update(`${name}\0`);
+      try {
+        const stat = lstatSync(file);
+        hash.update(`${stat.mode}\0`);
+        if (stat.isSymbolicLink())
+          throw new Error(`Scoped inputs cannot follow symlinks: ${name}`);
+        if (stat.isDirectory()) {
+          for (const entry of readdirSync(file).sort())
+            visit(name ? `${name}/${entry}` : entry);
+        } else if (stat.isFile()) hash.update(digest(readFileSync(file)));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        hash.update("missing");
+      }
+      hash.update("\0");
+    };
+    for (const name of [
+      ...new Set(
+        inputs.map((input) =>
+          relative(root, resolve(root, input)).replaceAll("\\", "/"),
+        ),
+      ),
+    ].sort()) {
+      // lstat on the final file alone would miss a symlink in its parents.
+      let prefix = root;
+      for (const component of name.split("/").filter(Boolean)) {
+        prefix = join(prefix, component);
+        try {
+          if (lstatSync(prefix).isSymbolicLink())
+            throw new Error(`Scoped inputs cannot follow symlinks: ${name}`);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          break;
+        }
+      }
+      visit(name);
+    }
+    return hash.digest("hex");
+  }
+  let root = resolve(workspace);
+  let head = "unversioned";
+  let files: string[];
+  try {
+    root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    files = execFileSync(
+      "git",
+      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+    )
+      .split("\0")
+      .filter(Boolean);
+    try {
+      head = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      head = "unborn";
+    }
+  } catch {
+    files = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(join(root, dir), {
+        withFileTypes: true,
+      })) {
+        if ([".git", "node_modules"].includes(entry.name)) continue;
+        const name = dir ? `${dir}/${entry.name}` : entry.name;
+        if (generated.test(name)) continue;
+        if (entry.isDirectory()) walk(name);
+        else files.push(name);
+      }
+    };
+    walk("");
+  }
+  const hash = createHash("sha256").update(`${head}\0`);
+  for (const name of [...new Set(files)]
+    .filter((name) => !generated.test(name))
+    .sort()) {
+    hash.update(`${name}\0`);
+    try {
+      const file = join(root, name);
+      const stat = lstatSync(file);
+      hash.update(`${stat.mode}\0`);
+      if (stat.isSymbolicLink()) hash.update(readlinkSync(file));
+      else if (stat.isFile()) hash.update(digest(readFileSync(file)));
+      else hash.update("directory");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      hash.update("deleted");
+    }
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function runPath(root: string, runId: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(runId)) throw new Error("Invalid agent run ID");
+  return join(runtimeStateDir(root, "agent-runs"), `${runId}.json`);
+}
+export function claimPath(root: string, runId: string): string {
+  return runPath(root, runId).replace(/\.json$/, ".claim.json");
+}
+export function readAgentRun(root: string, runId: string): AgentRun {
+  const run = RunSchema.parse(
+    JSON.parse(readFileSync(runPath(root, runId), "utf8")),
+  );
+  if (run.runId !== runId) throw new Error("Invalid agent run record");
+  return run;
+}
+export function beginAgentRun(args: {
+  root: string;
+  workspace: string;
+  agentId: string;
+  sessionId: string;
+  taskId: string;
+  vendor: string;
+  managed?: boolean;
+  dispatch?: AgentRun["dispatch"];
+  resumedFrom?: string;
+}): AgentRun {
+  const contract =
+    loadTaskContract(args.root, args.sessionId, args.taskId) ?? undefined;
+  const requiredDecisions = loadTaskDecisionRequirements(
+    args.root,
+    args.sessionId,
+    args.taskId,
+  );
+  const plan = loadSessionPlan(args.root, args.sessionId);
+  if (args.resumedFrom) {
+    const previous = readAgentRun(args.root, args.resumedFrom);
+    if (
+      previous.sessionId !== args.sessionId ||
+      previous.taskId !== args.taskId
+    )
+      throw new Error("A retry must belong to the same session and task");
+  }
+  const run: AgentRun = {
+    schemaVersion: 1,
+    runId: randomUUID(),
+    sequence: 0,
+    taskId: args.taskId,
+    sessionId: args.sessionId,
+    lineageId: plan?.lineage_id ?? args.sessionId,
+    goalId:
+      plan?.tasks.find((task) => task.id === args.taskId)?.goal_id ??
+      args.taskId,
+    agentId: args.agentId,
+    vendor: args.vendor,
+    runnerPid: args.managed ? process.pid : undefined,
+    workspace: resolve(args.workspace),
+    artifactRoot: resolve(args.root),
+    startedAt: new Date().toISOString(),
+    status: "running",
+    before: workspaceFingerprint(
+      contract?.inputs ? args.root : args.workspace,
+      contract?.inputs,
+    ),
+    contract,
+    ...(requiredDecisions.length > 0 ? { requiredDecisions } : {}),
+    dispatch: args.dispatch,
+    resumedFrom: args.resumedFrom,
+    checks: [],
+    changedFiles: [],
+    unresolved: [],
+    artifacts: {},
+  };
+  return withStateIndexLock(args.root, () => {
+    // Freeze the entire plan, including task IDs and replay prompts, at dispatch.
+    // Re-read under the lock so concurrent dispatches share one identity/budget.
+    const current = loadTaskContract(args.root, args.sessionId, args.taskId);
+    if (JSON.stringify(current ?? undefined) !== JSON.stringify(contract))
+      throw new Error("Task acceptance contract changed before dispatch");
+    const currentDecisions = loadTaskDecisionRequirements(
+      args.root,
+      args.sessionId,
+      args.taskId,
+    );
+    if (JSON.stringify(currentDecisions) !== JSON.stringify(requiredDecisions))
+      throw new Error("Task decision requirements changed before dispatch");
+    const currentPlan = loadSessionPlan(args.root, args.sessionId);
+    if (JSON.stringify(currentPlan) !== JSON.stringify(plan))
+      throw new Error("Plan changed before dispatch");
+    if (plan) {
+      const history = goalRuns(
+        listAgentRuns(args.root),
+        run.lineageId ?? args.sessionId,
+        run.goalId ?? args.taskId,
+      );
+      if (history.length >= plan.max_attempts)
+        throw new Error(
+          "Attempt limit reached for workflow lineage and logical goal",
+        );
+      const previous = history.at(-1);
+      if (
+        previous &&
+        classifyRunFailure(previous) === "WORKFLOW_EVIDENCE_FAILURE"
+      ) {
+        if (history.some((attempt) => attempt.evidenceRepair))
+          throw new Error(evidenceFailureHandoff(previous));
+        run.evidenceRepair = true;
+      }
+      pinSessionPlan(args.root, args.sessionId);
+    }
+    const directory = runtimeStateDir(args.root, "agent-runs");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const counter = join(directory, "_sequence.json");
+    const previous: unknown = existsSync(counter)
+      ? JSON.parse(readFileSync(counter, "utf8"))
+      : 0;
+    if (
+      typeof previous !== "number" ||
+      !Number.isSafeInteger(previous) ||
+      previous < 0
+    )
+      throw new Error("Invalid agent run sequence");
+    run.sequence = previous + 1;
+    atomicWriteJson(counter, run.sequence);
+    atomicWriteJson(runPath(args.root, run.runId), run);
+    return run;
+  });
+}
+export function agentResultInstructions(
+  root: string,
+  run: AgentRun,
+  readOnly = false,
+): string {
+  const decisions =
+    `Required decisions: ${JSON.stringify(run.requiredDecisions ?? run.contract?.required_decisions ?? [])}. Suggested decision subjects: ${JSON.stringify(listAgentDecisionSubjects(run.agentId)[run.agentId] ?? [])}. Report material choices made during this task, including optional choices, as {"subject":"declared or relevant subject","decision":"chosen approach","rationale":"reason","alternatives":[],"evidence":[]}; decisions and rationales must be nonblank. Do not invent decisions. Only required_decisions are mandatory. The parent records decisions for this run and checks every declared subject before completion. Routine work without declared decisions may return decisions: [].\n` +
+    (["pm-planner", "pm"].includes(run.agentId)
+      ? 'When authoring a plan, declare task.required_decisions as [{"subject":"relevant subject","description":"choice the task must resolve"}] before dispatch for substantive choices downstream agents must make; omit this field for routine execution. Use oma state required-decisions --agent <agent-id> --json to find suggested subjects.\n'
+      : "");
+  if (readOnly)
+    return `## Read-only result contract\nRun ${run.runId}, task ${run.taskId}, session ${run.sessionId}. Do not write coordination or result files. Return one final line: OMA_RESULT_JSON: {"status":"completed|partial|blocked|failed","changedFiles":[],"unresolved":[],"artifacts":[],"decisions":[],"verificationSkipped":"specific explanation of the read-only inspection performed"}. The parent records this inspection; it does not count as executable verification.\n${decisions}`;
+  return (
+    `## Execution result contract\nRun: ${run.runId}\nTask: ${run.taskId}\nSession: ${run.sessionId}\n` +
+    (run.evidenceRepair
+      ? "WORKFLOW_EVIDENCE_FAILURE repair (one attempt): correct only claim/report/artifact metadata and reverify the existing checks. Preserve product inputs, task IDs, and the frozen plan. Do not spawn planning or review tasks. On failure, stop with a partial handoff.\n"
+      : "") +
+    `Execute the pinned required checks with: oma agent verify ${run.runId} --required (from ${JSON.stringify(root)}).\nRequired checks: ${JSON.stringify(run.contract?.required_checks ?? [])}. A missing contract cannot prove acceptance criteria; define it in the session plan before starting a new run.\n` +
+    decisions +
+    `Write the human-readable report to ${AGENTS_RESULTS_DIR}/result-${run.agentId}-${run.taskId}-${run.runId}-${run.sessionId}.md under ${JSON.stringify(run.artifactRoot)}. Keep progress and coordination notes in .agents/state/memories/. Include this report path in artifacts; preserve the injected claim path below.\n` +
+    `Write ${claimPath(root, run.runId)} as JSON: {"status":"completed|partial|blocked|failed","changedFiles":[],"unresolved":[],"artifacts":[],"decisions":[]}.
+Paths are relative to ${run.artifactRoot}. Include the report and relevant plan/phase artifacts. A completed result requires no unresolved items and successful current verification receipts, or an explicit verificationSkipped reason for work that needs no executable check. Do not invent checks. Never run a build unless the user explicitly requested it.\n`
+  );
+}
+
+export function verifyAgentRun(
+  root: string,
+  runId: string,
+  command: string[],
+  cwd?: string,
+): VerificationReceipt {
+  if (!command[0]) throw new Error("A verification executable is required");
+  const run = readAgentRun(root, runId);
+  if (run.status !== "running")
+    throw new Error("Cannot verify a finished run; start a new run");
+  if (!contractStillCurrent(root, run.sessionId, run.taskId, run.contract))
+    throw new Error("Task verification contract changed; start a new run");
+  const directory = resolve(cwd ?? run.workspace);
+  const declared = run.contract?.required_checks.find(
+    (check) =>
+      JSON.stringify(check.command) === JSON.stringify(command) &&
+      resolve(run.artifactRoot, check.cwd) === directory,
+  );
+  const startedAt = new Date().toISOString();
+  const before = runFingerprint(run);
+  const result = spawnSync(command[0], command.slice(1), {
+    cwd: directory,
+    stdio: "inherit",
+    shell: false,
+  });
+  const receipt: VerificationReceipt = {
+    command,
+    cwd: directory,
+    checkId: declared?.id,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    exitCode: result.status,
+    before,
+    after: runFingerprint(run),
+  };
+  // Re-read to preserve prior receipts; verification commands run serially per run.
+  withStateIndexLock(root, () => {
+    const latest = readAgentRun(root, runId);
+    if (latest.status !== "running")
+      throw new Error("Run finished before verification was recorded");
+    latest.checks.push(receipt);
+    atomicWriteJson(runPath(root, runId), latest);
+  });
+  return receipt;
+}
+
+function artifactPath(workspace: string, name: string): string {
+  const target = resolve(workspace, name);
+  const rel = relative(workspace, target);
+  if (isAbsolute(name) || rel === ".." || rel.startsWith(`..${sep}`))
+    throw new Error(`Artifact must be workspace-relative: ${name}`);
+  if (!lstatSync(target).isFile())
+    throw new Error(`Artifact must be a regular file: ${name}`);
+  return target;
+}
+
+export function readOnlyClaim(log: string): unknown {
+  const line = log
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("OMA_RESULT_JSON: "))
+    .at(-1);
+  if (!line) return undefined;
+  try {
+    return JSON.parse(line.slice("OMA_RESULT_JSON: ".length));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bytes of captured agent output kept beside the run record. */
+export const RUN_OUTPUT_LIMIT = 64 * 1024;
+
+export function runOutputPath(root: string, runId: string): string {
+  return join(dirname(runPath(root, runId)), `${runId}.output.txt`);
+}
+
+/** Preserve the tail of a runner log as the run's observed output. */
+function preserveRunOutput(
+  root: string,
+  runId: string,
+  logPath: string,
+): AgentRun["output"] | undefined {
+  let log: string;
+  try {
+    log = readFileSync(logPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  if (!log.trim()) return undefined;
+  const truncated = Buffer.byteLength(log) > RUN_OUTPUT_LIMIT;
+  const kept = truncated ? log.slice(-RUN_OUTPUT_LIMIT) : log;
+  const path = runOutputPath(root, runId);
+  writeFileSync(path, kept, { encoding: "utf8", mode: 0o600 });
+  return {
+    path: relative(root, path),
+    bytes: Buffer.byteLength(kept),
+    truncated,
+  };
+}
+
+export function finishAgentRun(
+  root: string,
+  runId: string,
+  exitCode: number | null,
+  claim?: unknown,
+  options: { logPath?: string } = {},
+): AgentRun {
+  const after = runFingerprint(readAgentRun(root, runId));
+  let newlyFinished = false;
+  const finished = withStateIndexLock(root, () => {
+    const run = readAgentRun(root, runId);
+    if (run.status !== "running") return run;
+    run.exitCode = exitCode;
+    run.finishedAt = new Date().toISOString();
+    run.after = after;
+    if (options.logPath) {
+      const output = preserveRunOutput(root, runId, options.logPath);
+      if (output) run.output = output;
+    }
+    try {
+      const parsed = AgentClaimSchema.parse(
+        claim ?? JSON.parse(readFileSync(claimPath(root, runId), "utf8")),
+      );
+      run.status = parsed.status;
+      run.changedFiles = parsed.changedFiles;
+      run.unresolved = parsed.unresolved;
+      run.verificationSkipped = parsed.verificationSkipped;
+      recordAgentDecisions(run, parsed.decisions ?? []);
+      for (const name of parsed.artifacts)
+        run.artifacts[name.replaceAll("\\", "/")] = digest(
+          readFileSync(artifactPath(run.artifactRoot, name)),
+        );
+      if (run.status === "completed") {
+        if (
+          !contractStillCurrent(root, run.sessionId, run.taskId, run.contract)
+        ) {
+          run.status = "failed";
+          run.unresolved.push(
+            "Task acceptance contract changed during execution",
+          );
+        } else if (!hasCurrentDecisionRequirements(run)) {
+          run.status = "failed";
+          run.unresolved.push(
+            "Task decision requirements changed during execution",
+          );
+        } else if (run.checks.length > 0 && !hasCurrentChecks(run)) {
+          run.status = "failed";
+          run.unresolved.push("Verification failed or evidence became stale");
+        } else if (run.unresolved.length > 0) {
+          run.status = "partial";
+        } else if (
+          !hasCurrentChecks(run) &&
+          (!run.verificationSkipped || run.contract)
+        ) {
+          run.status = "partial";
+          run.unresolved.push(
+            "Missing declared checks: create acceptance_criteria and required_checks in the session plan, then verify a new run",
+          );
+        }
+      }
+    } catch (error) {
+      run.status = "partial";
+      run.unresolved.push(
+        `Missing or invalid structured result: ${(error as Error).message}`,
+      );
+    }
+    try {
+      const requiredDecisions =
+        run.requiredDecisions ?? run.contract?.required_decisions ?? [];
+      const decisionEvidence = verifyAgentDecisions(run, requiredDecisions);
+      if (
+        requiredDecisions.length > 0 ||
+        decisionEvidence.eventIds.length > 0
+      ) {
+        run.decisionEventIds = decisionEvidence.eventIds;
+        run.decisionEventHashes = decisionEvidence.eventHashes;
+      }
+      if (!decisionEvidence.ok) {
+        if (run.status === "completed") run.status = "partial";
+        run.unresolved.push(
+          `Missing required decisions: ${decisionEvidence.missing.map((decision) => decision.subject).join(", ")}`,
+        );
+        emitEvent(run.artifactRoot, run.sessionId, {
+          kind: "decision.missing",
+          vendor: run.vendor,
+          payload: {
+            workflow: "agent",
+            checkpoint: run.agentId,
+            instanceId: run.runId,
+            runId: run.runId,
+            taskId: run.taskId,
+            agentId: run.agentId,
+            missing: decisionEvidence.missing,
+            remediation:
+              "Report decisions with each required subject, decision, and rationale in the structured claim for the metadata repair run.",
+          },
+        });
+      }
+    } catch (error) {
+      if (run.status === "completed") run.status = "partial";
+      run.unresolved.push(
+        `Missing or invalid decision evidence: ${(error as Error).message}`,
+      );
+    }
+    if (exitCode !== 0) run.status = "failed";
+    if (run.evidenceRepair && run.before !== run.after) {
+      run.status = "failed";
+      run.unresolved.push(
+        "Evidence repair changed product inputs; preserve the product and report the unresolved work",
+      );
+    }
+    atomicWriteJson(runPath(root, runId), run);
+    newlyFinished = true;
+    return run;
+  });
+  if (newlyFinished) {
+    try {
+      deliverAgentDecisionMemory(finished);
+    } catch {
+      // Memory delivery cannot change the canonical completion receipt.
+    }
+  }
+  // Passive evidence capture must never change the completed run result. The
+  // recorder stores only references to existing output and verification data.
+  try {
+    recordHarnessEvolutionEvidence(root, finished);
+  } catch {
+    // A later evolution tick can still scan the canonical agent-run state.
+  }
+  return finished;
+}
+
+function hasCurrentDecisionRequirements(run: AgentRun): boolean {
+  return (
+    JSON.stringify(
+      loadTaskDecisionRequirements(run.artifactRoot, run.sessionId, run.taskId),
+    ) ===
+    JSON.stringify(
+      run.requiredDecisions ?? run.contract?.required_decisions ?? [],
+    )
+  );
+}
+
+export function hasCurrentChecks(run: AgentRun): boolean {
+  // Re-running a failed command successfully replaces its previous outcome.
+  const latest = new Map(
+    run.checks.map((check) => [
+      JSON.stringify([check.command, resolve(check.cwd ?? run.workspace)]),
+      check,
+    ]),
+  );
+  const declared = run.contract?.required_checks;
+  if (
+    !declared?.length ||
+    !contractStillCurrent(
+      run.artifactRoot,
+      run.sessionId,
+      run.taskId,
+      run.contract,
+    )
+  )
+    return false;
+  return (
+    declared.every((check) =>
+      run.checks.some(
+        (receipt) =>
+          receipt.checkId === check.id &&
+          JSON.stringify(receipt.command) === JSON.stringify(check.command) &&
+          resolve(receipt.cwd ?? run.workspace) ===
+            resolve(run.artifactRoot, check.cwd),
+      ),
+    ) &&
+    latest.size > 0 &&
+    [...latest.values()].every(
+      (check) =>
+        check.exitCode === 0 &&
+        check.before === run.after &&
+        check.after === run.after,
+    )
+  );
+}
+
+export function listAgentRuns(root: string): AgentRun[] {
+  const dir = runtimeStateDir(root, "agent-runs");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter(
+      (file) =>
+        file.endsWith(".json") &&
+        !file.endsWith(".claim.json") &&
+        file !== "_sequence.json",
+    )
+    .map((file) => {
+      try {
+        return readAgentRun(root, file.slice(0, -5));
+      } catch {
+        // A broken latest record must not expose an older success as current.
+        throw new Error(`Invalid agent run record: ${join(dir, file)}`);
+      }
+    })
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
+export function resultEvidenceValid(
+  run: AgentRun,
+  requireChecks = true,
+): boolean {
+  try {
+    return (
+      run.status === "completed" &&
+      run.exitCode === 0 &&
+      run.unresolved.length === 0 &&
+      run.after === runFingerprint(run) &&
+      contractStillCurrent(
+        run.artifactRoot,
+        run.sessionId,
+        run.taskId,
+        run.contract,
+      ) &&
+      hasCurrentDecisionRequirements(run) &&
+      (!requireChecks || hasCurrentChecks(run)) &&
+      verifyAgentDecisions(
+        run,
+        run.requiredDecisions ?? run.contract?.required_decisions ?? [],
+        run.decisionEventIds ?? [],
+        run.decisionEventHashes ?? {},
+      ).ok &&
+      Object.entries(run.artifacts).every(
+        ([name, hash]) =>
+          digest(readFileSync(artifactPath(run.artifactRoot, name))) === hash,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Attempts belong to a logical goal, even without a resumedFrom chain. */
+export function goalRuns(
+  runs: AgentRun[],
+  lineageId: string,
+  goalId: string,
+): AgentRun[] {
+  return runs.filter(
+    (run) =>
+      (run.lineageId ?? run.sessionId) === lineageId &&
+      (run.goalId ?? run.taskId) === goalId,
+  );
+}
+
+export function classifyRunFailure(
+  run: AgentRun,
+): "PRODUCT_FAILURE" | "WORKFLOW_EVIDENCE_FAILURE" | null {
+  if (run.status === "running" || resultEvidenceValid(run)) return null;
+  try {
+    // Invalid claims and missing artifacts add a diagnostic, not a product finding.
+    if (
+      run.exitCode === 0 &&
+      hasCurrentChecks(run) &&
+      run.after === runFingerprint(run) &&
+      run.unresolved.every(
+        (issue) =>
+          issue.startsWith("Missing or invalid structured result:") ||
+          issue.startsWith("Missing or invalid decision evidence:") ||
+          issue.startsWith("Missing required decisions:"),
+      )
+    )
+      return "WORKFLOW_EVIDENCE_FAILURE";
+  } catch {
+    // Without current product evidence it is unsafe to claim product success.
+  }
+  return "PRODUCT_FAILURE";
+}
+
+export function evidenceFailureHandoff(run: AgentRun): string {
+  return `WORKFLOW_EVIDENCE_FAILURE: product checks passed for run ${run.runId}; stop product replay and recursive planning. Inspect ${claimPath(run.artifactRoot, run.runId)} and its receipt/artifact bindings; preserve the plan and report partial with the failing evidence.`;
+}
+
+export function runFingerprint(run: AgentRun): string {
+  return workspaceFingerprint(
+    run.contract?.inputs ? run.artifactRoot : run.workspace,
+    run.contract?.inputs,
+  );
+}
+
+export function verifyRequiredChecks(
+  root: string,
+  runId: string,
+): VerificationReceipt[] {
+  const run = readAgentRun(root, runId);
+  if (!run.contract)
+    throw new Error(
+      "No task verification contract; declare acceptance_criteria and required_checks in the session plan",
+    );
+  return run.contract.required_checks.map((check) =>
+    verifyAgentRun(
+      root,
+      runId,
+      check.command,
+      resolve(run.artifactRoot, check.cwd),
+    ),
+  );
+}

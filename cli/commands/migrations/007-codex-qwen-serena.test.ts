@@ -1,0 +1,211 @@
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { syncBrowserMcp } from "../../vendors/browser-mcp.js";
+import {
+  applyCodexSettings,
+  serializeCodexConfig,
+} from "../../vendors/codex/settings.js";
+import { applyQwenSettings } from "../../vendors/qwen/settings.js";
+import type { DevToolsBrowser } from "../../vendors/serena.js";
+import { migrateCodexQwenSerena } from "./007-codex-qwen-serena.js";
+
+let cwd: string;
+
+/** A Codex config the user owns — installed and authenticated outside oma. */
+const FOREIGN_CODEX_TOML = 'model = "gpt-5"\n';
+
+function seedCodex(): string {
+  const path = join(cwd, ".codex", "config.toml");
+  mkdirSync(join(cwd, ".codex"), { recursive: true });
+  writeFileSync(path, FOREIGN_CODEX_TOML);
+  return path;
+}
+
+function seedQwen(): string {
+  const path = join(cwd, ".qwen", "settings.json");
+  mkdirSync(join(cwd, ".qwen"), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ theme: "dark" }, null, 2)}\n`);
+  return path;
+}
+
+beforeEach(() => {
+  cwd = mkdtempSync(join(tmpdir(), "oma-mig007-"));
+});
+
+afterEach(() => {
+  rmSync(cwd, { recursive: true, force: true });
+});
+
+describe("migrateCodexQwenSerena (007) — vendor gating", () => {
+  it("leaves .codex/config.toml untouched when codex is not selected", () => {
+    const path = seedCodex();
+
+    const actions = migrateCodexQwenSerena.up(cwd, { vendors: ["opencode"] });
+
+    expect(actions).toEqual([]);
+    expect(readFileSync(path, "utf-8")).toBe(FOREIGN_CODEX_TOML);
+  });
+
+  it("leaves .qwen/settings.json untouched when qwen is not selected", () => {
+    const path = seedQwen();
+    const before = readFileSync(path, "utf-8");
+
+    const actions = migrateCodexQwenSerena.up(cwd, { vendors: ["claude"] });
+
+    expect(actions).toEqual([]);
+    expect(readFileSync(path, "utf-8")).toBe(before);
+  });
+
+  it("writes nothing when the selection is empty (install, pre-prompt pass)", () => {
+    const codex = seedCodex();
+    const qwen = seedQwen();
+    const qwenBefore = readFileSync(qwen, "utf-8");
+
+    const actions = migrateCodexQwenSerena.up(cwd, { vendors: [] });
+
+    expect(actions).toEqual([]);
+    expect(readFileSync(codex, "utf-8")).toBe(FOREIGN_CODEX_TOML);
+    expect(readFileSync(qwen, "utf-8")).toBe(qwenBefore);
+  });
+
+  it("registers Serena for the vendors that are selected", () => {
+    const codex = seedCodex();
+    seedQwen();
+
+    const actions = migrateCodexQwenSerena.up(cwd, { vendors: ["codex"] });
+
+    expect(actions).toEqual([".codex/config.toml (Serena MCP registered)"]);
+    expect(readFileSync(codex, "utf-8")).toContain("[mcp_servers.serena]");
+  });
+
+  it("stays unrestricted when no context is passed", () => {
+    const codex = seedCodex();
+    seedQwen();
+
+    const actions = migrateCodexQwenSerena.up(cwd);
+
+    expect(actions).toEqual([
+      ".qwen/settings.json (Serena MCP registered)",
+      ".codex/config.toml (Serena MCP registered)",
+    ]);
+    expect(readFileSync(codex, "utf-8")).toContain("[mcp_servers.serena]");
+  });
+
+  it("is idempotent for a selected vendor", () => {
+    seedCodex();
+
+    const first = migrateCodexQwenSerena.up(cwd, { vendors: ["codex"] });
+    const second = migrateCodexQwenSerena.up(cwd, { vendors: ["codex"] });
+
+    expect(first).toHaveLength(1);
+    expect(second).toEqual([]);
+  });
+
+  it.each<{ browsers: DevToolsBrowser[] }>([
+    { browsers: ["aside"] },
+    { browsers: ["firefox"] },
+    { browsers: [] },
+  ])(
+    "does not re-register Serena after browser reconciliation: $browsers",
+    ({ browsers }) => {
+      const codex = seedCodex();
+      const qwen = seedQwen();
+      writeFileSync(codex, serializeCodexConfig(applyCodexSettings({})));
+      writeFileSync(qwen, JSON.stringify(applyQwenSettings({})));
+      syncBrowserMcp(cwd, browsers, ["codex", "qwen"], {
+        home: join(cwd, "home"),
+      });
+      const before = [codex, qwen].map((path) => readFileSync(path, "utf-8"));
+
+      expect(
+        migrateCodexQwenSerena.up(cwd, { vendors: ["codex", "qwen"] }),
+      ).toEqual([]);
+      expect([codex, qwen].map((path) => readFileSync(path, "utf-8"))).toEqual(
+        before,
+      );
+    },
+  );
+
+  it("registers Serena without changing browser, privacy, or model preferences", () => {
+    const codex = seedCodex();
+    const qwen = seedQwen();
+    writeFileSync(codex, 'model = "custom-model"\n');
+    writeFileSync(qwen, '{"model":{"generationConfig":{"timeout":123}}}');
+
+    expect(
+      migrateCodexQwenSerena.up(cwd, { vendors: ["codex", "qwen"] }),
+    ).toHaveLength(2);
+    const codexAfter = readFileSync(codex, "utf-8");
+    const qwenAfter = JSON.parse(readFileSync(qwen, "utf-8"));
+    expect(codexAfter).toContain('model = "custom-model"');
+    expect(codexAfter).not.toMatch(
+      /chrome-devtools|analytics|feedback|features/,
+    );
+    expect(Object.keys(qwenAfter.mcpServers)).toEqual(["serena"]);
+    expect(qwenAfter.model.generationConfig.timeout).toBe(123);
+    expect(qwenAfter).not.toHaveProperty("privacy");
+  });
+
+  it("does not register Serena when another code intelligence provider is selected", () => {
+    const codex = seedCodex();
+    const qwen = seedQwen();
+    mkdirSync(join(cwd, ".agents"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".agents", "oma-config.yaml"),
+      "providers:\n  code_intelligence: gortex\n",
+    );
+
+    const actions = migrateCodexQwenSerena.up(cwd, {
+      vendors: ["codex", "qwen"],
+    });
+
+    expect(actions).toEqual([]);
+    expect(readFileSync(codex, "utf-8")).toBe(FOREIGN_CODEX_TOML);
+    expect(readFileSync(qwen, "utf-8")).not.toContain("serena");
+  });
+});
+
+describe("migrateCodexQwenSerena (007) — unparseable user configs", () => {
+  it("never rewrites a qwen settings.json or codex config.toml it cannot parse", () => {
+    const qwen = join(cwd, ".qwen", "settings.json");
+    const codex = join(cwd, ".codex", "config.toml");
+    mkdirSync(join(cwd, ".qwen"), { recursive: true });
+    mkdirSync(join(cwd, ".codex"), { recursive: true });
+    const brokenJson = '{ "theme": "dark", "mcpServers": { "mine": ';
+    const brokenToml = 'model = "gpt-5"\n[mcp_servers.mine\n';
+    writeFileSync(qwen, brokenJson);
+    writeFileSync(codex, brokenToml);
+
+    const actions = migrateCodexQwenSerena.up(cwd, {
+      vendors: ["codex", "qwen"],
+    });
+
+    expect(actions).toEqual([]);
+    expect(readFileSync(qwen, "utf-8")).toBe(brokenJson);
+    expect(readFileSync(codex, "utf-8")).toBe(brokenToml);
+  });
+
+  it("merges into a qwen settings.json that only has trailing commas", () => {
+    const qwen = join(cwd, ".qwen", "settings.json");
+    mkdirSync(join(cwd, ".qwen"), { recursive: true });
+    writeFileSync(
+      qwen,
+      '{ "theme": "dark", "mcpServers": { "mine": { "command": "x" }, }, }',
+    );
+
+    migrateCodexQwenSerena.up(cwd, { vendors: ["qwen"] });
+
+    const after = JSON.parse(readFileSync(qwen, "utf-8"));
+    expect(after.theme).toBe("dark");
+    expect(after.mcpServers.mine).toEqual({ command: "x" });
+    expect(after.mcpServers.serena).toBeDefined();
+  });
+});

@@ -1,0 +1,535 @@
+import { Command } from "commander";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { printDescribe } from "./cli-framework.js";
+import { REMOVED_POSITIONAL_FORMS } from "./command-paths.js";
+import { createCommandSurface } from "./command-surface.js";
+
+function fixture() {
+  const program = new Command("oma")
+    .option("-g, --global")
+    .option("-y, --yes")
+    .exitOverride();
+  const calls: unknown[][] = [];
+  const action = (...args: unknown[]) => {
+    calls.push(args);
+  };
+  program
+    .command("schedule:add <agent> <prompt>")
+    .option("-m, --model <vendor>")
+    .option("--every <phrase>")
+    .option("--max-age-days <n>")
+    .action(action);
+  program
+    .command("schedule:list")
+    .option("--json")
+    .option("--output <format>")
+    .action(action);
+  program.command("schedule:run <id>").action(action);
+  program
+    .command("agent:spawn <agent> <prompt> <session>")
+    .option("--root <path>")
+    .option("-m, --model <vendor>")
+    .action(action);
+  program
+    .command("agent:verify <id> [command...]")
+    .option("--root <path>")
+    .option("--required")
+    .action(action);
+  program.command("model:probe <slug>").option("--timeout <ms>").action(action);
+  program
+    .command("memory:maintain <action>")
+    .option("--dry-run")
+    .action(action);
+  program
+    .command("state [sid]")
+    .option("--activate <id>")
+    .option("--archive")
+    .option("--purge")
+    .option("--dry-run")
+    .action(action);
+  program.command("state:get <sid>").action(action);
+  program
+    .command("state:inject-log <sid>")
+    .option("--entry <file>")
+    .option("--json")
+    .action(action);
+  const search = program.command("search").alias("s");
+  search.command("api <url>").action(action);
+  search
+    .command("api:search <query>")
+    .option("--timeout <seconds>")
+    .action(action);
+  program
+    .command("skill:meta-optimize")
+    .option("--skill <ids...>")
+    .option("--json")
+    .action(action);
+  const image = program.command("image").alias("img");
+  image
+    .command("generate <prompt...>")
+    .option("--model <name>")
+    .option("--format <format>")
+    .option("--out <dir>")
+    .option("--timeout <seconds>")
+    .action(action);
+  return { program, calls, surface: createCommandSurface(program) };
+}
+
+describe("canonical command surface", () => {
+  it("rejects removed command paths and option spellings", () => {
+    const { surface } = fixture();
+    for (const argv of [
+      ["schedule:list"],
+      ["agent:spawn", "qa", "p", "sid"],
+      ["img", "generate", "p"],
+      ["state", "sid"],
+      ["search", "api", "https://example.test"],
+      ["schedule", "create", "qa", "p", "--model", "codex"],
+      ["schedule", "create", "qa", "p", "-mcodex"],
+      ["schedule", "create", "qa", "p", "--max-age-days", "2"],
+      ["agent", "spawn", "qa", "p", "sid", "--root", "/tmp"],
+      ["state", "list", "--archive"],
+      ["image", "generate", "p", "--out", "/tmp"],
+    ])
+      expect(() => surface.normalize(argv), argv.join(" ")).toThrow();
+    // Removed positional forms name their replacement; paths without a
+    // recorded replacement keep the generic --help pointer.
+    expect(() =>
+      surface.normalize(["search", "api", "https://example.test"]),
+    ).toThrow(
+      "Unexpected argument for oma search. Use oma search api fetch <url>.",
+    );
+    expect(() => surface.normalize(["search", "bogus", "x"])).toThrow(
+      "Unexpected argument for oma search. Use --help.",
+    );
+  });
+  it("dispatches the canonical spelling to the handler exactly once", async () => {
+    for (const argv of [
+      [
+        "schedule",
+        "create",
+        "qa",
+        "check: api",
+        "--vendor",
+        "codex",
+        "--every",
+        "5m",
+        "--expires-after",
+        "2d",
+      ],
+    ]) {
+      const { program, calls, surface } = fixture();
+      const hook = vi.fn();
+      program.hook("preAction", hook);
+      await program.parseAsync(surface.normalize(argv), { from: "user" });
+      expect(calls).toHaveLength(1);
+      expect(hook).toHaveBeenCalledOnce();
+      expect(calls[0]?.slice(0, 3)).toEqual([
+        "qa",
+        "check: api",
+        { model: "codex", every: "5m", maxAgeDays: "2" },
+      ]);
+    }
+  });
+
+  it("preserves leading globals, equals options, Unicode and prompt tokens", () => {
+    const { surface } = fixture();
+    expect(
+      surface.normalize([
+        "-g",
+        "--yes",
+        "agent",
+        "spawn",
+        "qa",
+        "schedule:list --model x 한글",
+        "sid",
+        "--project-root=C:\\my repo",
+        "--vendor=codex",
+      ]),
+    ).toEqual([
+      "-g",
+      "--yes",
+      "agent:spawn",
+      "qa",
+      "schedule:list --model x 한글",
+      "sid",
+      "--root=C:\\my repo",
+      "--model=codex",
+    ]);
+  });
+
+  it("lets a variadic option own every value up to the next flag", () => {
+    const { surface } = fixture();
+    expect(
+      surface.normalize([
+        "skill",
+        "meta-optimize",
+        "--skill",
+        "oma-docs",
+        "oma-refactor",
+        "--json",
+      ]),
+    ).toEqual([
+      "skill:meta-optimize",
+      "--skill",
+      "oma-docs",
+      "oma-refactor",
+      "--json",
+    ]);
+  });
+
+  it("does not interpret an option value as another option or help", () => {
+    const { surface } = fixture();
+    expect(
+      surface.normalize([
+        "agent",
+        "spawn",
+        "qa",
+        "prompt",
+        "sid",
+        "--project-root",
+        "--vendor",
+      ]),
+    ).toEqual(["agent:spawn", "qa", "prompt", "sid", "--root", "--vendor"]);
+    expect(
+      surface.showHelp([
+        "agent",
+        "spawn",
+        "qa",
+        "prompt",
+        "sid",
+        "--root",
+        "--help",
+      ]),
+    ).toBe(false);
+  });
+
+  it("leaves passthrough argv untouched after -- or the child executable", () => {
+    const { surface } = fixture();
+    expect(
+      surface.normalize([
+        "agent",
+        "verify",
+        "run1",
+        "--",
+        "node",
+        "--project-root",
+        "foo:bar",
+      ]),
+    ).toEqual([
+      "agent:verify",
+      "run1",
+      "--",
+      "node",
+      "--project-root",
+      "foo:bar",
+    ]);
+    expect(
+      surface.normalize([
+        "agent",
+        "verify",
+        "run1",
+        "node",
+        "--project-root",
+        "foo",
+      ]),
+    ).toEqual(["agent:verify", "run1", "node", "--project-root", "foo"]);
+  });
+
+  it("converts explicit durations to handler units", () => {
+    const { surface } = fixture();
+    expect(
+      surface.normalize(["model", "probe", "m", "--timeout", "30s"]),
+    ).toEqual(["model:probe", "m", "--timeout", "30000"]);
+    expect(() =>
+      surface.normalize(["model", "probe", "m", "--timeout", "30"]),
+    ).toThrow("unit");
+    expect(() =>
+      surface.normalize([
+        "schedule",
+        "create",
+        "qa",
+        "p",
+        "--expires-after",
+        "1h",
+      ]),
+    ).toThrow("whole number");
+  });
+
+  it("keeps model selection distinct from vendor selection and alias names", () => {
+    const { surface } = fixture();
+    expect(
+      surface.normalize([
+        "image",
+        "generate",
+        "p",
+        "--model",
+        "gpt-image-2",
+        "--output",
+        "json",
+        "--output-dir",
+        "/tmp/out",
+        "--timeout",
+        "2m",
+      ]),
+    ).toEqual([
+      "image",
+      "generate",
+      "p",
+      "--model",
+      "gpt-image-2",
+      "--format",
+      "json",
+      "--out",
+      "/tmp/out",
+      "--timeout",
+      "120",
+    ]);
+  });
+
+  it("resolves conflicting parent actions and explicit state operations", () => {
+    const { surface } = fixture();
+    expect(surface.normalize(["search", "api", "search", "q"])).toEqual([
+      "search",
+      "api:search",
+      "q",
+    ]);
+    expect(
+      surface.normalize(["search", "api", "fetch", "https://example.test"]),
+    ).toEqual(["search", "api", "https://example.test"]);
+    expect(surface.normalize(["state", "get", "repair"])).toEqual([
+      "state:get",
+      "repair",
+    ]);
+
+    expect(surface.normalize(["state", "activate", "s1"])).toEqual([
+      "state",
+      "--activate",
+      "s1",
+    ]);
+    expect(surface.normalize(["state", "activate", "--dry-run", "s1"])).toEqual(
+      ["state", "--activate", "s1", "--dry-run"],
+    );
+    expect(() => surface.normalize(["state", "activate"])).toThrow(
+      "session-id",
+    );
+    expect(surface.normalize(["state", "archive", "--dry-run"])).toEqual([
+      "state",
+      "--archive",
+      "--dry-run",
+    ]);
+    expect(
+      surface.normalize(["memory", "maintain", "backup", "--dry-run"]),
+    ).toEqual(["memory:maintain", "backup", "--dry-run"]);
+    expect(
+      surface.normalize([
+        "state",
+        "inject-log",
+        "get",
+        "s1",
+        "entry.json",
+        "--json",
+      ]),
+    ).toEqual(["state:inject-log", "--entry", "entry.json", "s1", "--json"]);
+  });
+
+  it("rejects contradictory output choices", () => {
+    const { surface } = fixture();
+    expect(() =>
+      surface.normalize(["schedule", "list", "--json", "--output", "text"]),
+    ).toThrow("conflicts");
+  });
+
+  it("adds a unit only to unitless duration defaults in projected help", () => {
+    const program = new Command("oma").exitOverride();
+    program
+      .command("state [sid]")
+      .option("--older-than <duration>", "Purge age threshold", "90d")
+      .action(() => {});
+    const search = program.command("search");
+    search
+      .command("api:search <query>")
+      .option("--timeout <seconds>", "Request timeout", "30")
+      .action(() => {});
+    const { help } = createCommandSurface(program);
+    const option = (path: string[], long: string) => {
+      let command: Command | undefined = help;
+      for (const name of path)
+        command = command?.commands.find((c) => c.name() === name);
+      return command?.options.find((o) => o.long === long)?.defaultValue;
+    };
+    expect(option(["state", "list"], "--older-than")).toBe("90d");
+    expect(option(["search", "api", "search"], "--timeout")).toBe("30s");
+  });
+
+  it("hides internal commands from help and describe but keeps them runnable", () => {
+    const program = new Command("oma").exitOverride();
+    program.command("schedule:inspect <id>").action(() => {});
+    program
+      .command("schedule:list")
+      .description("List jobs")
+      .action(() => {});
+    program
+      .command("state [sid]")
+      .option("--archive", "Archive sessions")
+      .action(() => {});
+    const surface = createCommandSurface(program);
+    const schedule = surface.help.commands.find((c) => c.name() === "schedule");
+    expect(schedule?.description()).toBe(
+      "Create and manage scheduled agent jobs",
+    );
+    expect(schedule?.helpInformation()).toContain("list");
+    expect(schedule?.helpInformation()).not.toContain("inspect");
+    expect(surface.normalize(["schedule", "inspect", "job"])).toEqual([
+      "schedule:inspect",
+      "job",
+    ]);
+
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    printDescribe(surface.help);
+    const described = JSON.stringify(JSON.parse(log.mock.calls[0]?.[0]));
+    log.mockRestore();
+    expect(described).toContain('"schedule list"');
+    expect(described).not.toContain('"schedule inspect"');
+    const state = surface.help.commands.find((c) => c.name() === "state");
+    expect(
+      state?.commands.find((c) => c.name() === "archive")?.description(),
+    ).toBe("Move inactive terminal sessions to the state archive");
+  });
+
+  it("exposes nested help without invoking an action", () => {
+    const { surface, calls } = fixture();
+    const output: string[] = [];
+    surface.help.configureOutput({ writeOut: (s) => output.push(s) });
+    // output settings were inherited at construction, so inspect generated help directly.
+    const schedule = surface.help.commands.find((c) => c.name() === "schedule");
+    expect(schedule?.helpInformation()).toContain("create");
+    expect(schedule?.helpInformation()).toContain("list");
+    expect(
+      schedule?.commands.find((c) => c.name() === "create")?.helpInformation(),
+    ).toContain("--vendor");
+    expect(surface.describePath("schedule create")).toBe("schedule create");
+    expect(calls).toEqual([]);
+    expect(surface.showHelp([])).toBe(false);
+    expect(surface.showHelp(["--global"])).toBe(false);
+    expect(surface.showHelp(["--version"])).toBe(false);
+    expect(
+      surface.showHelp([
+        "agent",
+        "spawn",
+        "qa",
+        "p",
+        "sid",
+        "--project-root",
+        "--help",
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe("OS-invoked legacy paths", () => {
+  // Regression: launchd/crontab/systemd registrations written before the
+  // command-path standardization invoke `oma schedule:run <id>`; rejecting the
+  // spelling made every pre-existing scheduled job fail with Unknown command.
+  // normalize() returns the legacy-parser spelling (the registered
+  // `schedule:run` command), so the assertion is that the argv is accepted
+  // and routed — the same result the canonical `schedule run` produces.
+  it("accepts `schedule:run <id>` and routes it like `schedule run <id>`", () => {
+    const { surface } = fixture();
+    expect(surface.normalize(["schedule:run", "sch_abc"])).toEqual(
+      surface.normalize(["schedule", "run", "sch_abc"]),
+    );
+    expect(surface.normalize(["schedule:run", "sch_abc"])).toEqual([
+      "schedule:run",
+      "sch_abc",
+    ]);
+  });
+
+  it("keeps root options ahead of the legacy path intact", () => {
+    const { surface } = fixture();
+    expect(surface.normalize(["--yes", "schedule:run", "sch_abc"])).toEqual([
+      "--yes",
+      "schedule:run",
+      "sch_abc",
+    ]);
+  });
+
+  it("still rejects human-typed legacy paths that are not OS-invoked", () => {
+    const { surface } = fixture();
+    expect(() => surface.normalize(["schedule:list"])).toThrow(
+      /Unknown command/,
+    );
+  });
+});
+
+// Every documented removed positional spelling ("Aliases and removed spellings"
+// in web/docs/cli-interfaces/commands.md) must still be rejected by the real
+// CLI registration, and the error must name the replacement.
+describe("removed positional forms on the actual CLI", () => {
+  let program: Command;
+  beforeAll(async () => {
+    const argv = process.argv;
+    const parse = vi
+      .spyOn(Command.prototype, "parseAsync")
+      .mockImplementation(async function (this: Command) {
+        program = this;
+        return this;
+      });
+    process.argv = ["node", "oma", "--version"];
+    try {
+      await import("../cli.js");
+    } finally {
+      process.argv = argv;
+      parse.mockRestore();
+    }
+  }, 30_000);
+
+  it.each([
+    [["vault", "rm", "token"], "vault", "vault delete <name>"],
+    [
+      ["search", "api", "https://example.test"],
+      "search",
+      "search api fetch <url>",
+    ],
+    [
+      ["search", "rss", "https://example.test/feed"],
+      "search",
+      "search rss fetch <url>",
+    ],
+    [["search", "api:search", "q"], "search", "search api search <query>"],
+    [["search", "rss:google", "q"], "search", "search rss google <query>"],
+    [["slide", "new"], "slide", "slide create"],
+    [["slide", "pdf"], "slide", "slide export pdf"],
+    [["slide", "styles", "list"], "slide", "slide style <list|preview|get>"],
+    [["image", "list-vendors"], "image", "image vendor list"],
+    [["video", "list-providers"], "video", "video provider list"],
+    [["intel", "run"], "intel", "intel suggest"],
+    [["verify", "backend"], "verify", "verify agent <agent-type>"],
+  ])("rejects %j and names the replacement", (argv, parent, replacement) => {
+    expect(() => createCommandSurface(program).normalize(argv)).toThrow(
+      `Unexpected argument for oma ${parent}. Use oma ${replacement}.`,
+    );
+  });
+
+  it("covers every recorded form and keeps --help for unknown words", () => {
+    const surface = createCommandSurface(program);
+    for (const [key, replacement] of Object.entries(REMOVED_POSITIONAL_FORMS)) {
+      const words = key.split(" ");
+      const parent = words.length > 1 ? words.slice(0, -1).join(" ") : key;
+      const argv = words.length > 1 ? [...words, "x"] : [...words, "backend"];
+      expect(() => surface.normalize(argv), key).toThrow(
+        `Unexpected argument for oma ${parent}. Use oma ${replacement}.`,
+      );
+      // The replacement itself must be a real command path.
+      let node: Command | undefined = surface.help;
+      for (const name of replacement
+        .split(" ")
+        .filter((w) => !w.startsWith("<")))
+        node = node?.commands.find((c) => c.name() === name);
+      expect(node, replacement).toBeDefined();
+    }
+    expect(() => surface.normalize(["vault", "bogus"])).toThrow(
+      "Unexpected argument for oma vault. Use --help.",
+    );
+  });
+});

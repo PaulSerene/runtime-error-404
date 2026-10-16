@@ -1,0 +1,445 @@
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { evalConcurrency, mapWithLimit } from "./concurrency.js";
+import { awaitDispatchResult } from "./envelope.js";
+import { loadRolloutEntries, loadTaskFixtures } from "./fixtures.js";
+import {
+  buildRolloutExpectation,
+  contentHash,
+  judgeVerdict,
+  taskFixtureHash,
+  writeRolloutRecord,
+} from "./rollouts.js";
+import { scoreChecker } from "./scoring.js";
+import {
+  JUDGE_DEFAULT_RUBRIC,
+  type JudgeDispatchFn,
+  type LiveDispatchFn,
+  NEG_TRANSFER_FAIL,
+  type NegativeTransfer,
+  type NegativeTransferCoverage,
+  type RolloutEntry,
+  type RolloutExpectation,
+  type TaskFixture,
+} from "./types.js";
+
+/** Find tasks belonging to other skills in the selected domains. */
+/** Cross-domain fallback sample size when no same-domain neighbor exists. */
+export const CROSS_DOMAIN_NEIGHBOR_LIMIT = 6;
+
+export type NeighborScope = "same-domain" | "cross-domain";
+
+export interface NeighborTask {
+  otherSkill: string;
+  task: TaskFixture;
+  scope: NeighborScope;
+}
+
+/**
+ * Neighbor tasks for negative-transfer measurement. Same-domain tasks of other
+ * skills come first. When a skill's domain has no neighbor at all, a bounded
+ * cross-domain sample (round-robin over the other skills) is used instead:
+ * interference by an injected body is not limited to its own domain, and a
+ * unique domain must not make promotion impossible. The scope is reported so
+ * the two samples are never mistaken for each other.
+ */
+export function discoverNeighborTasks(
+  skillId: string,
+  domains: Set<string>,
+  evalRoot: string,
+): NeighborTask[] {
+  if (!existsSync(evalRoot)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(evalRoot);
+  } catch {
+    return [];
+  }
+
+  const sameDomain: NeighborTask[] = [];
+  const perSkill: Array<{ otherSkill: string; tasks: TaskFixture[] }> = [];
+  for (const entry of entries.sort()) {
+    if (entry === skillId || entry.startsWith("_")) continue;
+    const otherDir = join(evalRoot, entry);
+    try {
+      readdirSync(otherDir);
+    } catch {
+      continue;
+    }
+    const { fixtures } = loadTaskFixtures(otherDir);
+    if (fixtures.length === 0) continue;
+    perSkill.push({ otherSkill: entry, tasks: fixtures });
+    for (const task of fixtures) {
+      if (domains.has(task.domain))
+        sameDomain.push({ otherSkill: entry, task, scope: "same-domain" });
+    }
+  }
+  if (sameDomain.length > 0) return sameDomain;
+
+  const crossDomain: NeighborTask[] = [];
+  for (
+    let index = 0;
+    crossDomain.length < CROSS_DOMAIN_NEIGHBOR_LIMIT;
+    index += 1
+  ) {
+    let added = false;
+    for (const { otherSkill, tasks } of perSkill) {
+      const task = tasks[index];
+      if (!task) continue;
+      crossDomain.push({ otherSkill, task, scope: "cross-domain" });
+      added = true;
+      if (crossDomain.length >= CROSS_DOMAIN_NEIGHBOR_LIMIT) break;
+    }
+    if (!added) break;
+  }
+  return crossDomain;
+}
+
+type NeighborScores = { scoreWithoutX: number; scoreWithX: number };
+
+/** Compatibility alias for the shared full task/evaluator contract hash. */
+export function negativeTransferTaskHash(task: TaskFixture): string {
+  return taskFixtureHash(task);
+}
+
+/** Candidate recordings are separate from the neighbor's own evaluation. */
+export function negativeTransferRecordDir(
+  evalRoot: string,
+  skillId: string,
+  otherSkill: string,
+  body: string,
+): string {
+  return join(
+    evalRoot,
+    skillId,
+    "_negative-transfer",
+    otherSkill,
+    contentHash(body),
+  );
+}
+
+function scorePair(
+  task: TaskFixture,
+  entries: RolloutEntry[],
+): NeighborScores | null {
+  const baseline = entries.find((entry) => entry.arm === "baseline");
+  const treatment = entries.find((entry) => entry.arm === "treatment");
+  if (!baseline || !treatment) return null;
+  try {
+    const scoreWithoutX = scoreChecker(
+      task.checker,
+      baseline.output,
+      baseline.score,
+    );
+    const scoreWithX = scoreChecker(
+      task.checker,
+      treatment.output,
+      treatment.score,
+    );
+    if (!Number.isFinite(scoreWithoutX) || !Number.isFinite(scoreWithX))
+      return null;
+    return { scoreWithoutX, scoreWithX };
+  } catch {
+    console.warn(
+      `[oma skill eval] neg-transfer: skipping neighbor task ${task.id}: missing or invalid checker score.`,
+    );
+    return null;
+  }
+}
+
+/** Replay only a paired comparison explicitly recorded for this candidate. */
+export function scoreNeighborInMock(
+  task: TaskFixture,
+  recordDir: string,
+  expect?: RolloutExpectation,
+  candidateSkill?: string,
+): NeighborScores | null {
+  if (!candidateSkill || !expect?.skillBodyHash) {
+    console.warn(
+      `[oma skill eval] neg-transfer: skipping neighbor task ${task.id}: candidate provenance is required.`,
+    );
+    return null;
+  }
+  const taskHash = negativeTransferTaskHash(task);
+  const rollouts = loadRolloutEntries(recordDir, expect).filter(
+    (entry) =>
+      entry.taskId === task.id &&
+      entry.candidateSkill === candidateSkill &&
+      entry.skillBodyHash === expect.skillBodyHash &&
+      entry.promptHash === contentHash(task.prompt) &&
+      entry.taskHash === taskHash &&
+      typeof entry.comparisonId === "string" &&
+      entry.comparisonId.length > 0,
+  );
+  const comparisons = new Map<string, RolloutEntry[]>();
+  for (const entry of rollouts) {
+    const id = entry.comparisonId as string;
+    comparisons.set(id, [...(comparisons.get(id) ?? []), entry]);
+  }
+  for (const pair of comparisons.values()) {
+    // Duplicate or unmatched arms cannot prove one matched comparison.
+    if (pair.length !== 2 || pair[0]?.arm === pair[1]?.arm) continue;
+    const scores = scorePair(task, pair);
+    if (scores) return scores;
+  }
+  console.warn(
+    `[oma skill eval] neg-transfer: skipping neighbor task ${task.id}: no matched candidate recording; run --live --neg-transfer --record.`,
+  );
+  return null;
+}
+
+/** Run both arms now, with the same dispatch and separate empty workspaces. */
+async function collectNeighborPair(
+  task: TaskFixture,
+  body: string,
+  dispatchFn: LiveDispatchFn,
+  judgeDispatchFn: JudgeDispatchFn | undefined,
+  candidateSkill: string,
+): Promise<{ scores: NeighborScores; rollouts: RolloutEntry[] } | null> {
+  if (task.checker.type === "judge" && !judgeDispatchFn) {
+    console.warn(
+      `[oma skill eval] neg-transfer: skipping judge neighbor task ${task.id}: no judge dispatch function.`,
+    );
+    return null;
+  }
+  const comparisonDir = mkdtempSync(join(tmpdir(), "oma-eval-neighbor-"));
+  const comparisonId = randomUUID();
+  const rollouts: RolloutEntry[] = [];
+  try {
+    for (const arm of ["baseline", "treatment"] as const) {
+      const armDir = join(comparisonDir, arm);
+      mkdirSync(armDir);
+      const prompt =
+        arm === "treatment" && body
+          ? `${body}\n\n---\n\n${task.prompt}`
+          : task.prompt;
+      const { output, usage } = await awaitDispatchResult(
+        dispatchFn(arm, prompt, armDir),
+      );
+      const entry: RolloutEntry = {
+        taskId: task.id,
+        arm,
+        output,
+        ...(usage.status === "actual" ? { usage } : {}),
+        candidateSkill,
+        comparisonId,
+        skillBodyHash: contentHash(body),
+        promptHash: contentHash(task.prompt),
+        taskHash: negativeTransferTaskHash(task),
+      };
+      if (task.checker.type === "judge" && judgeDispatchFn) {
+        const verdict = await judgeVerdict(
+          task.prompt,
+          output,
+          task.checker.rubric ?? JUDGE_DEFAULT_RUBRIC,
+          judgeDispatchFn,
+        );
+        entry.score = verdict.score;
+        entry.judgeResponse = verdict.response;
+        if (verdict.usage.status === "actual") entry.judgeUsage = verdict.usage;
+      }
+      rollouts.push(entry);
+    }
+    const scores = scorePair(task, rollouts);
+    return scores ? { scores, rollouts } : null;
+  } catch (error) {
+    console.warn(
+      `[oma skill eval] neg-transfer: neighbor task ${task.id} could not be measured: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  } finally {
+    rmSync(comparisonDir, { recursive: true, force: true });
+  }
+}
+
+/** Compatibility facade: previous recordings are never used for a live baseline. */
+export function scoreNeighborInLive(
+  task: TaskFixture,
+  _neighborTaskDir: string,
+  skillXBody: string,
+  dispatchFn: LiveDispatchFn,
+  judgeDispatchFn: JudgeDispatchFn | undefined,
+  _tmpBase: string,
+  _expect?: RolloutExpectation,
+): Promise<NeighborScores | null> {
+  return collectNeighborPair(
+    task,
+    skillXBody,
+    dispatchFn,
+    judgeDispatchFn,
+    "",
+  ).then((comparison) => comparison?.scores ?? null);
+}
+
+export interface MeasureNegativeTransferOptions {
+  skill: string;
+  domains: Set<string>;
+  evalRoot: string;
+  mode: "mock" | "live";
+  maxTasks?: number;
+  body: string;
+  dispatchFn?: LiveDispatchFn;
+  judgeFn?: JudgeDispatchFn;
+  record?: boolean;
+  /**
+   * Live only: re-run a neighbor whose first paired delta is at or below
+   * NEG_TRANSFER_FAIL and report the mean; a regression counts as confirmed
+   * only when the repeat also regresses.
+   */
+  confirmRegressions?: boolean;
+}
+
+/** Explicit coverage prevents an empty or partial result from meaning no regression. */
+export async function measureNegativeTransfer(
+  options: MeasureNegativeTransferOptions,
+): Promise<{
+  entries: NegativeTransfer[];
+  coverage: NegativeTransferCoverage;
+}> {
+  const {
+    skill,
+    domains,
+    evalRoot,
+    mode,
+    maxTasks,
+    body,
+    dispatchFn,
+    judgeFn,
+  } = options;
+  const neighbors = discoverNeighborTasks(skill, domains, evalRoot);
+  const sampled =
+    maxTasks !== undefined && maxTasks > 0
+      ? neighbors.slice(0, maxTasks)
+      : neighbors;
+  if (sampled.length < neighbors.length) {
+    console.warn(
+      `[oma skill eval] neg-transfer: ${neighbors.length} neighbor tasks found; capping at --max-tasks=${maxTasks} (${neighbors.length - sampled.length} dropped).`,
+    );
+  }
+  const measureNeighbor = async ({
+    otherSkill,
+    task,
+  }: NeighborTask): Promise<NegativeTransfer | null> => {
+    const recordDir = negativeTransferRecordDir(
+      evalRoot,
+      skill,
+      otherSkill,
+      body,
+    );
+    let scored: NeighborScores | null;
+    let trials = 1;
+    let confirmed: boolean | undefined;
+    if (mode === "mock") {
+      scored = scoreNeighborInMock(
+        task,
+        recordDir,
+        buildRolloutExpectation([task], body),
+        skill,
+      );
+    } else if (dispatchFn) {
+      const comparison = await collectNeighborPair(
+        task,
+        body,
+        dispatchFn,
+        judgeFn,
+        skill,
+      );
+      scored = comparison?.scores ?? null;
+      if (comparison && options.record)
+        writeRolloutRecord(recordDir, comparison.rollouts);
+      if (
+        scored &&
+        options.confirmRegressions &&
+        scored.scoreWithX - scored.scoreWithoutX <= NEG_TRANSFER_FAIL
+      ) {
+        // One binary neighbor flip is indistinguishable from sampling noise;
+        // only a reproduced regression rejects a candidate.
+        const repeat = await collectNeighborPair(
+          task,
+          body,
+          dispatchFn,
+          judgeFn,
+          skill,
+        );
+        if (repeat) {
+          if (options.record) writeRolloutRecord(recordDir, repeat.rollouts);
+          const repeatDelta =
+            repeat.scores.scoreWithX - repeat.scores.scoreWithoutX;
+          confirmed = repeatDelta <= NEG_TRANSFER_FAIL;
+          trials = 2;
+          scored = {
+            scoreWithX: (scored.scoreWithX + repeat.scores.scoreWithX) / 2,
+            scoreWithoutX:
+              (scored.scoreWithoutX + repeat.scores.scoreWithoutX) / 2,
+          };
+        }
+      }
+    } else {
+      scored = null;
+    }
+    if (!scored) return null;
+    return {
+      otherSkill,
+      domain: task.domain,
+      taskId: task.id,
+      candidateSkill: skill,
+      skillBodyHash: contentHash(body),
+      delta: scored.scoreWithX - scored.scoreWithoutX,
+      trials,
+      ...(confirmed === undefined ? {} : { confirmed }),
+    };
+  };
+  const measured = await mapWithLimit(
+    sampled,
+    evalConcurrency(),
+    measureNeighbor,
+  );
+  const entries: NegativeTransfer[] = measured.filter(
+    (entry): entry is NegativeTransfer => entry !== null,
+  );
+  return {
+    entries,
+    coverage: {
+      status:
+        sampled.length > 0 && entries.length === sampled.length
+          ? "measured"
+          : "insufficient",
+      expected: sampled.length,
+      scored: entries.length,
+      ...(sampled[0] ? { scope: sampled[0].scope } : {}),
+    },
+  };
+}
+
+/** Legacy array API; callers deciding adoption should use the coverage-aware API. */
+export function computeNegativeTransfer(
+  skillId: string,
+  skillDomains: Set<string>,
+  evalRoot: string,
+  mode: "mock" | "live",
+  maxTasks: number | undefined,
+  skillXBody: string,
+  dispatchFn: LiveDispatchFn | undefined,
+  judgeDispatchFn: JudgeDispatchFn | undefined,
+  _tmpBase: string,
+  _workspace?: string,
+): Promise<NegativeTransfer[]> {
+  return measureNegativeTransfer({
+    skill: skillId,
+    domains: skillDomains,
+    evalRoot,
+    mode,
+    maxTasks,
+    body: skillXBody,
+    dispatchFn,
+    judgeFn: judgeDispatchFn,
+  }).then((result) => result.entries);
+}

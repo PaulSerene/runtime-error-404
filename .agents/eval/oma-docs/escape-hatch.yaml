@@ -1,0 +1,13 @@
+id: oma-docs-escape-hatch
+skill: oma-docs
+domain: docs-drift
+prompt: |
+  A generated markdown file is full of illustrative paths that intentionally
+  do not resolve, and oma docs verify keeps flagging it. What per-file
+  marker does the flow honor to exclude that file from reference checks?
+  Give the exact marker text.
+checker:
+  type: assert
+  expect_contains:
+    - "oma-docs: skip"
+weight: 1

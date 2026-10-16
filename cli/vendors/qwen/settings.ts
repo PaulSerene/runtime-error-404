@@ -1,0 +1,312 @@
+import { serenaTransportMode } from "../../utils/config.js";
+import { isRecord } from "../../utils/type-guards.js";
+import {
+  RECOMMENDED_CHROME_DEVTOOLS_MCP,
+  type SerenaMcpEntry,
+  serenaMcpEntry,
+} from "../serena.js";
+import {
+  applyPrivacyTelemetry,
+  applyRecommendedMcpServers,
+  filterMcpServerKeys,
+  type McpServerEntry,
+  needsPrivacyTelemetryUpdate,
+  needsRecommendedMcpUpdate,
+} from "../settings-shared.js";
+
+/**
+ * Recommended Qwen Code settings managed by oh-my-agent.
+ * Applies to project-local `.qwen/settings.json`.
+ *
+ * Qwen Code is a fork of Gemini CLI and shares the `mcpServers` schema.
+ * Serena is registered via direct stdio with --context=ide; switching to
+ * bridge mode is an opt-in via oma-config `serena.mode: bridge` (handled
+ * in `oma link`).
+ */
+
+// `privacy.usageStatisticsEnabled` (default true) controls anonymized usage
+// stats sent to Alibaba. Gated on the `telemetry` flag from oma-config.yaml
+// (default off → flag set to false). Qwen Code shares this schema with
+// Gemini CLI (upstream fork).
+export interface QwenSettingsOptions {
+  /** When true, omit `privacy.usageStatisticsEnabled` opt-out. */
+  telemetry?: boolean;
+  /**
+   * When true, the user-level `~/.qwen/settings.json` defines
+   * `modelProviders`. Qwen Code seals provider model entries, so a
+   * project-level `model.generationConfig.timeout` is ignored for them and
+   * only produces a startup warning — oma leaves it unpinned instead.
+   */
+  userModelProviders?: boolean;
+}
+
+export const RECOMMENDED_QWEN_MCP = {
+  "chrome-devtools": { ...RECOMMENDED_CHROME_DEVTOOLS_MCP, trust: true },
+  get serena(): SerenaMcpEntry & { trust: boolean } {
+    return { ...serenaMcpEntry("ide", serenaTransportMode()), trust: true };
+  },
+};
+
+interface QwenMcpServer extends McpServerEntry {
+  env?: Record<string, string>;
+  cwd?: string;
+  headers?: Record<string, string>;
+  type?: string;
+  timeout?: number;
+  trust?: boolean;
+  description?: string;
+  includeTools?: string[];
+  excludeTools?: string[];
+}
+
+export interface QwenSettings {
+  mcpServers?: Record<string, QwenMcpServer>;
+  memory?: {
+    enableManagedAutoMemory?: boolean;
+    [key: string]: unknown;
+  };
+  model?: {
+    generationConfig?: {
+      timeout?: number;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+const QWEN_ALLOWED_MCP_SERVER_KEYS = new Set([
+  "command",
+  "args",
+  "env",
+  "cwd",
+  "url",
+  "httpUrl",
+  "headers",
+  "tcp",
+  "type",
+  "timeout",
+  "trust",
+  "description",
+  "includeTools",
+  "excludeTools",
+]);
+
+export function sanitizeQwenSettings(rawSettings: unknown): QwenSettings {
+  const qwenSettings = normalizeQwenSettings(rawSettings);
+  if (qwenSettings.mcpServers) {
+    qwenSettings.mcpServers = Object.fromEntries(
+      Object.entries(qwenSettings.mcpServers).map(([name, server]) => [
+        name,
+        filterMcpServerKeys(server, QWEN_ALLOWED_MCP_SERVER_KEYS),
+      ]),
+    );
+  }
+  return qwenSettings;
+}
+
+function normalizeQwenSettings(input: unknown): QwenSettings {
+  if (!isRecord(input)) return {};
+  const mcpServers = isRecord(input.mcpServers)
+    ? (input.mcpServers as Record<string, QwenMcpServer>)
+    : undefined;
+  return { ...input, mcpServers };
+}
+
+/**
+ * Request timeout (ms) oma pins for Qwen model generation. Qwen Code's stock
+ * default is short enough that long agent turns abort mid-stream, so oma
+ * writes an explicit 5-minute ceiling.
+ *
+ * The pin is a floor: a missing or lower value (e.g. an older oma pin) is
+ * raised, and a user's higher value is kept as-is.
+ *
+ * Where it lands depends on the settings shape: newer configs carry a
+ * `modelProviders` map (per-provider entry lists) and the timeout belongs on
+ * each provider entry; older configs have none, and the single top-level
+ * `model.generationConfig` is the only slot. The two are mutually exclusive —
+ * when `modelProviders` is present the top-level copy is removed so there is
+ * exactly one source of truth. When the providers live in the user-level
+ * settings instead (`userModelProviders`), the project file has no slot that
+ * Qwen Code honors, so no top-level copy is written either.
+ */
+export const QWEN_REQUEST_TIMEOUT_MS = 300_000;
+
+function updateModelProvidersTimeout(
+  modelProviders: unknown,
+  timeout: number,
+): void {
+  if (!isRecord(modelProviders)) return;
+  for (const key of Object.keys(modelProviders)) {
+    const list = modelProviders[key];
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!isRecord(item)) continue;
+      const genConfig = isRecord(item.generationConfig)
+        ? item.generationConfig
+        : {};
+      if (meetsTimeoutFloor(genConfig.timeout, timeout)) continue;
+      item.generationConfig = { ...genConfig, timeout };
+    }
+  }
+}
+
+/** True when `value` is a number at or above the pinned floor. */
+function meetsTimeoutFloor(value: unknown, floor: number): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= floor;
+}
+
+function hasModelProvidersTimeoutMismatch(
+  modelProviders: unknown,
+  targetTimeout: number,
+): boolean {
+  if (!isRecord(modelProviders)) return false;
+  for (const key of Object.keys(modelProviders)) {
+    const list = modelProviders[key];
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!isRecord(item)) continue;
+      const genConfig = isRecord(item.generationConfig)
+        ? item.generationConfig
+        : {};
+      if (!meetsTimeoutFloor(genConfig.timeout, targetTimeout)) return true;
+    }
+  }
+  return false;
+}
+
+function hasTopLevelTimeout(settings: QwenSettings): boolean {
+  return (
+    isRecord(settings.model) &&
+    isRecord(settings.model.generationConfig) &&
+    "timeout" in settings.model.generationConfig
+  );
+}
+
+/** Drops `model.generationConfig.timeout`, pruning containers it leaves empty. */
+function removeTopLevelTimeout(settings: QwenSettings): void {
+  if (!isRecord(settings.model)) return;
+  const model = settings.model;
+  if (!isRecord(model.generationConfig)) return;
+  delete model.generationConfig.timeout;
+  if (Object.keys(model.generationConfig).length === 0) {
+    delete model.generationConfig;
+  }
+  if (Object.keys(model).length === 0) {
+    delete settings.model;
+  }
+}
+
+export function needsQwenSettingsUpdate(
+  rawSettings: unknown,
+  options: QwenSettingsOptions = {},
+): boolean {
+  const normalized = normalizeQwenSettings(rawSettings);
+  const sanitized = sanitizeQwenSettings(rawSettings);
+  if (JSON.stringify(normalized) !== JSON.stringify(sanitized)) return true;
+
+  if (needsRecommendedMcpUpdate(sanitized.mcpServers)) return true;
+  if (
+    Object.keys(RECOMMENDED_QWEN_MCP).some(
+      (name) => typeof sanitized.mcpServers?.[name]?.trust !== "boolean",
+    )
+  )
+    return true;
+
+  // applyQwenSettings drops `contentGenerator`, and every call site gates that
+  // apply behind this function — without reporting the leftover key here the
+  // removal is unreachable for a config that is otherwise already current.
+  if ("contentGenerator" in sanitized) return true;
+
+  if (
+    !isRecord(sanitized.memory) ||
+    typeof sanitized.memory.enableManagedAutoMemory !== "boolean"
+  ) {
+    return true;
+  }
+
+  if (isRecord(sanitized.modelProviders)) {
+    if (
+      hasModelProvidersTimeoutMismatch(
+        sanitized.modelProviders,
+        QWEN_REQUEST_TIMEOUT_MS,
+      )
+    ) {
+      return true;
+    }
+    // A leftover top-level copy must be cleared once modelProviders owns it.
+    if (hasTopLevelTimeout(sanitized)) return true;
+  } else if (options.userModelProviders) {
+    // User-level providers ignore the project top-level copy; clear it.
+    if (hasTopLevelTimeout(sanitized)) return true;
+  } else if (
+    !meetsTimeoutFloor(
+      sanitized.model?.generationConfig?.timeout,
+      QWEN_REQUEST_TIMEOUT_MS,
+    )
+  ) {
+    return true;
+  }
+
+  return needsPrivacyTelemetryUpdate(sanitized, options.telemetry);
+}
+
+export function applyQwenSettings(
+  rawSettings: unknown,
+  options: QwenSettingsOptions = {},
+): QwenSettings {
+  const qwenSettings = sanitizeQwenSettings(rawSettings);
+  const existingServers = qwenSettings.mcpServers;
+
+  qwenSettings.mcpServers = applyRecommendedMcpServers(
+    qwenSettings.mcpServers,
+    RECOMMENDED_QWEN_MCP,
+  );
+  for (const name of Object.keys(RECOMMENDED_QWEN_MCP)) {
+    qwenSettings.mcpServers[name] = {
+      ...qwenSettings.mcpServers[name],
+      trust: existingServers?.[name]?.trust ?? true,
+    };
+  }
+
+  delete qwenSettings.contentGenerator;
+
+  // Qwen enables background memory extraction by default. Install an explicit
+  // opt-out while preserving preferences set through Qwen's /memory controls.
+  const memory = isRecord(qwenSettings.memory) ? qwenSettings.memory : {};
+  if (typeof memory.enableManagedAutoMemory !== "boolean") {
+    qwenSettings.memory = { ...memory, enableManagedAutoMemory: false };
+  }
+
+  if (isRecord(qwenSettings.modelProviders)) {
+    updateModelProvidersTimeout(
+      qwenSettings.modelProviders,
+      QWEN_REQUEST_TIMEOUT_MS,
+    );
+    removeTopLevelTimeout(qwenSettings);
+  } else if (options.userModelProviders) {
+    removeTopLevelTimeout(qwenSettings);
+  } else {
+    const existingModel = isRecord(qwenSettings.model)
+      ? qwenSettings.model
+      : {};
+    const existingGenConfig = isRecord(existingModel.generationConfig)
+      ? existingModel.generationConfig
+      : {};
+
+    if (
+      !meetsTimeoutFloor(existingGenConfig.timeout, QWEN_REQUEST_TIMEOUT_MS)
+    ) {
+      qwenSettings.model = {
+        ...existingModel,
+        generationConfig: {
+          ...existingGenConfig,
+          timeout: QWEN_REQUEST_TIMEOUT_MS,
+        },
+      };
+    }
+  }
+
+  applyPrivacyTelemetry(qwenSettings, options.telemetry);
+
+  return qwenSettings;
+}

@@ -1,0 +1,459 @@
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import { AGENTS_RESULTS_DIR } from "../constants/paths.js";
+
+export interface AgentActivity {
+  agent: string;
+  type: "progress" | "result";
+  content: string;
+  timestamp?: string;
+}
+
+export interface SessionSummary {
+  sessionId?: string;
+  agents: string[];
+  activities: AgentActivity[];
+  completedTasks: string[];
+  inProgressTasks: string[];
+}
+
+export interface SessionMeta {
+  id?: string;
+  status?: string;
+  startedAt?: string;
+}
+
+export interface MemoryInitResult {
+  memoriesDir: string;
+  sessionId: string;
+  created: string[];
+  updated: string[];
+  skipped: string[];
+}
+
+/** Canonical OMA-owned coordination store (progress and session artifacts). */
+export const COORDINATION_STORE_REL = join(".agents", "state", "memories");
+/** Pre-move location where Serena's knowledge store doubled as coordination. */
+export const LEGACY_SERENA_MEMORY_REL = join(".serena", "memories");
+
+/** @deprecated Use COORDINATION_STORE_REL. */
+export const CANONICAL_MEMORIES_REL = COORDINATION_STORE_REL;
+/** @deprecated Use LEGACY_SERENA_MEMORY_REL. */
+export const LEGACY_MEMORIES_REL = LEGACY_SERENA_MEMORY_REL;
+
+/** Resolve the only writable OMA coordination store. */
+export function getCoordinationStorePath(cwd: string): string {
+  return join(cwd, COORDINATION_STORE_REL);
+}
+
+/** Canonical directory for human-readable result reports. */
+export function getResultsPath(cwd: string): string {
+  return join(cwd, AGENTS_RESULTS_DIR);
+}
+
+/** @deprecated Use getCoordinationStorePath. */
+export const getMemoriesPath = getCoordinationStorePath;
+
+/** Existing memory dirs, canonical first — union reads while legacy files remain. */
+export function getCoordinationStoreDirs(cwd: string): string[] {
+  const dirs = [
+    join(cwd, COORDINATION_STORE_REL),
+    join(cwd, LEGACY_SERENA_MEMORY_REL),
+  ].filter((dir) => existsSync(dir));
+  return dirs.length > 0 ? dirs : [join(cwd, COORDINATION_STORE_REL)];
+}
+
+/** @deprecated Use getCoordinationStoreDirs. */
+export const getMemoryDirs = getCoordinationStoreDirs;
+
+/** Prefer canonical reports while retaining reads of legacy result files. */
+export function resolveCoordinationFile(
+  cwd: string,
+  filename: string,
+): string | null {
+  const dirs = getCoordinationStoreDirs(cwd);
+  if (/^result-.+\.md$/.test(filename)) dirs.unshift(getResultsPath(cwd));
+  for (const dir of dirs) {
+    const candidate = join(dir, filename);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** @deprecated Use resolveCoordinationFile. */
+export const resolveMemoryFile = resolveCoordinationFile;
+
+function readFileSafe(filePath: string): string {
+  try {
+    return readFileSync(filePath, "utf-8");
+  } catch {
+    return "";
+  }
+}
+
+function extractSessionId(content: string): string | undefined {
+  return (
+    (content.match(/##\s*ID:\s*(.+)/i) || [])[1] ||
+    (content.match(/session-id:\s*(.+)/i) || [])[1] ||
+    content.match(/(session-\d{8}-\d{6})/)?.[1]
+  );
+}
+
+function isTrivialContent(content: string): boolean {
+  const trimmed = content.trim();
+  return trimmed === "" || trimmed === "---";
+}
+
+export function formatSessionId(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const yyyy = date.getFullYear();
+  const mm = pad(date.getMonth() + 1);
+  const dd = pad(date.getDate());
+  const hh = pad(date.getHours());
+  const mi = pad(date.getMinutes());
+  const ss = pad(date.getSeconds());
+  return `session-${yyyy}${mm}${dd}-${hh}${mi}${ss}`;
+}
+
+function buildOrchestratorTemplate(
+  sessionId: string,
+  startedAt: string,
+): string {
+  return [
+    "# Orchestrator Session",
+    `## ID: ${sessionId}`,
+    `## Started: ${startedAt}`,
+    "## Status: idle",
+    "",
+    "## Agents",
+    "| Agent ID | CLI | PID | Status | Task |",
+    "|----------|-----|-----|--------|------|",
+    "",
+    "## Summary (filled on completion)",
+    "- Total Tasks: 0",
+    "- Completed: 0",
+    "- Failed: 0",
+    "- Files Created: []",
+    "- Issues: []",
+    "",
+  ].join("\n");
+}
+
+function buildTaskBoardTemplate(sessionId: string): string {
+  return [
+    "# Task Board",
+    `## Session: ${sessionId}`,
+    "",
+    "| Agent | Status | Task |",
+    "|-------|--------|------|",
+    "",
+  ].join("\n");
+}
+
+interface MemoryFileEntry {
+  name: string;
+  path: string;
+}
+
+/** Union of memory files across dirs; canonical shadows legacy on name clash. */
+function listMemoryFileEntries(cwd: string): MemoryFileEntry[] {
+  const seen = new Map<string, string>();
+  const reportsDir = getResultsPath(cwd);
+  for (const dir of [reportsDir, ...getCoordinationStoreDirs(cwd)]) {
+    let names: string[] = [];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith(".md") || name === ".gitkeep") continue;
+      if (dir === reportsDir && !/^result-.+\.md$/.test(name)) continue;
+      if (!seen.has(name)) seen.set(name, join(dir, name));
+    }
+  }
+  return [...seen.entries()].map(([name, path]) => ({ name, path }));
+}
+
+export function listMemoryFiles(cwd: string): string[] {
+  return listMemoryFileEntries(cwd).map((entry) => entry.name);
+}
+
+export function parseAgentActivity(
+  filename: string,
+  content: string,
+): AgentActivity | null {
+  const progressMatch = filename.match(/^progress-(\w+)(?:-[\w-]+)?\.md$/);
+  const resultMatch = filename.match(/^result-(\w+)(?:-[\w-]+)?\.md$/);
+
+  if (progressMatch?.[1]) {
+    return {
+      agent: progressMatch[1],
+      type: "progress",
+      content: content.slice(0, 500),
+    };
+  }
+
+  if (resultMatch?.[1]) {
+    return {
+      agent: resultMatch[1],
+      type: "result",
+      content: content.slice(0, 500),
+    };
+  }
+
+  return null;
+}
+
+export function getSessionSummary(cwd: string): SessionSummary {
+  const summary: SessionSummary = {
+    agents: [],
+    activities: [],
+    completedTasks: [],
+    inProgressTasks: [],
+  };
+
+  const entries = listMemoryFileEntries(cwd);
+
+  for (const { name: file, path: filePath } of entries) {
+    if (file === "orchestrator-session.md") {
+      try {
+        const content = readFileSync(filePath, "utf-8");
+        const sessionMatch = content.match(/session[:\s]+(\S+)/i);
+        if (sessionMatch) {
+          summary.sessionId = sessionMatch[1];
+        }
+      } catch {}
+      continue;
+    }
+
+    try {
+      const content = readFileSync(filePath, "utf-8");
+      const activity = parseAgentActivity(file, content);
+
+      if (activity) {
+        summary.activities.push(activity);
+
+        if (!summary.agents.includes(activity.agent)) {
+          summary.agents.push(activity.agent);
+        }
+
+        if (activity.type === "result") {
+          const taskMatch =
+            content.match(/task[:\s]+(.+)/i) || content.match(/##\s*(.+)/);
+          if (taskMatch?.[1]) {
+            summary.completedTasks.push(taskMatch[1].trim());
+          }
+        } else if (activity.type === "progress") {
+          const taskMatch =
+            content.match(/current[:\s]+(.+)/i) ||
+            content.match(/working on[:\s]+(.+)/i);
+          if (
+            taskMatch?.[1] &&
+            !summary.completedTasks.includes(taskMatch[1].trim())
+          ) {
+            summary.inProgressTasks.push(taskMatch[1].trim());
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return summary;
+}
+
+export function getSessionMeta(cwd: string): SessionMeta {
+  const sessionFile = resolveCoordinationFile(cwd, "orchestrator-session.md");
+  if (!sessionFile) return {};
+
+  const content = readFileSafe(sessionFile);
+  if (!content) return {};
+
+  const id = extractSessionId(content)?.trim();
+  const status =
+    (content.match(/##\s*Status:\s*(.+)/i) || [])[1] ||
+    (content.match(/status:\s*(running|completed|failed|aborted)/i) || [])[1];
+  const startedAt =
+    (content.match(/##\s*Started:\s*(.+)/i) || [])[1] ||
+    (content.match(/started:\s*(.+)/i) || [])[1];
+
+  return {
+    id,
+    status: status?.trim().toLowerCase(),
+    startedAt: startedAt?.trim(),
+  };
+}
+
+export function getCompletedTasksCount(cwd: string): number {
+  let completed = 0;
+
+  const entries = listMemoryFileEntries(cwd);
+  for (const { name: file, path: filePath } of entries) {
+    if (!file.startsWith("result-")) continue;
+    const content = readFileSafe(filePath);
+    if (!content) continue;
+
+    const statusLine = content
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => /^##\s*Status:/i.test(l) || /^Status:/i.test(l));
+
+    if (statusLine) {
+      const match = statusLine.match(/status[^:]*:\s*([a-z_]+)/i);
+      if (match?.[1]?.toLowerCase() === "completed") {
+        completed += 1;
+      }
+    }
+  }
+
+  const taskBoard = readFileSafe(
+    resolveCoordinationFile(cwd, "task-board.md") ?? "",
+  );
+  if (taskBoard) {
+    const taskBoardCompleted = taskBoard
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /status/i.test(line))
+      .reduce((count, line) => {
+        const match = line.match(/status[^:]*:\s*([a-z_]+)/i);
+        if (match?.[1]?.toLowerCase() === "completed") return count + 1;
+        return count;
+      }, 0);
+    completed = Math.max(completed, taskBoardCompleted);
+  }
+
+  const sessionFile = readFileSafe(
+    resolveCoordinationFile(cwd, "orchestrator-session.md") ?? "",
+  );
+  if (sessionFile) {
+    const summaryCompleted = sessionFile.match(/Completed:\s*(\d+)/i);
+    if (summaryCompleted?.[1]) {
+      const summaryCount = parseInt(summaryCompleted[1], 10);
+      if (!Number.isNaN(summaryCount)) {
+        completed = Math.max(completed, summaryCount);
+      }
+    }
+  }
+
+  return completed;
+}
+
+export function getRecentAgentActivities(
+  cwd: string,
+  sinceDate?: string,
+): AgentActivity[] {
+  const allActivities: AgentActivity[] = [];
+
+  const _cutoffTime = sinceDate ? new Date(sinceDate).getTime() : 0;
+  const entries = listMemoryFileEntries(cwd);
+
+  for (const { name: file, path: filePath } of entries) {
+    if (file === "orchestrator-session.md") continue;
+
+    try {
+      const content = readFileSync(filePath, "utf-8");
+
+      const activity = parseAgentActivity(file, content);
+      if (activity) {
+        allActivities.push(activity);
+      }
+    } catch {}
+  }
+
+  return allActivities;
+}
+
+export function extractKeyLearningsFromActivities(
+  activities: AgentActivity[],
+): string[] {
+  const learnings: string[] = [];
+
+  for (const activity of activities) {
+    const content = activity.content.toLowerCase();
+
+    if (content.includes("error") || content.includes("fail")) {
+      learnings.push(`${activity.agent}: Error handling improved`);
+    }
+    if (content.includes("refactor")) {
+      learnings.push(`${activity.agent}: Code structure refactored`);
+    }
+    if (content.includes("test")) {
+      learnings.push(`${activity.agent}: Test coverage added`);
+    }
+    if (content.includes("performance") || content.includes("optimize")) {
+      learnings.push(`${activity.agent}: Performance optimized`);
+    }
+  }
+
+  return [...new Set(learnings)].slice(0, 5);
+}
+
+export function ensureMemorySchema(
+  cwd: string,
+  options: { force?: boolean } = {},
+): MemoryInitResult {
+  const coordinationDir = getCoordinationStorePath(cwd);
+  if (!existsSync(coordinationDir)) {
+    mkdirSync(coordinationDir, { recursive: true });
+  }
+
+  const existingSession = readFileSafe(
+    resolveCoordinationFile(cwd, "orchestrator-session.md") ?? "",
+  );
+  const existingTaskBoard = readFileSafe(
+    resolveCoordinationFile(cwd, "task-board.md") ?? "",
+  );
+  const detectedSessionId =
+    extractSessionId(existingSession) ||
+    extractSessionId(existingTaskBoard) ||
+    formatSessionId(new Date());
+
+  const nowIso = new Date().toISOString();
+  const orchestratorTemplate = buildOrchestratorTemplate(
+    detectedSessionId,
+    nowIso,
+  );
+  const taskBoardTemplate = buildTaskBoardTemplate(detectedSessionId);
+
+  const created: string[] = [];
+  const updated: string[] = [];
+  const skipped: string[] = [];
+
+  const ensureFile = (filename: string, content: string) => {
+    const existingPath = resolveCoordinationFile(cwd, filename);
+    if (!existingPath) {
+      writeFileSync(join(coordinationDir, filename), content, "utf-8");
+      created.push(filename);
+      return;
+    }
+
+    const current = readFileSafe(existingPath);
+    if (options.force || isTrivialContent(current)) {
+      // Legacy Serena memory remains readable for compatibility, but all
+      // writes are routed to OMA's canonical coordination store.
+      writeFileSync(join(coordinationDir, filename), content, "utf-8");
+      updated.push(filename);
+      return;
+    }
+
+    skipped.push(filename);
+  };
+
+  ensureFile("orchestrator-session.md", orchestratorTemplate);
+  ensureFile("task-board.md", taskBoardTemplate);
+  ensureFile(".gitkeep", "");
+
+  return {
+    memoriesDir: coordinationDir,
+    sessionId: detectedSessionId,
+    created,
+    updated,
+    skipped,
+  };
+}

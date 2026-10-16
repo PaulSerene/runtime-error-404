@@ -1,0 +1,861 @@
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  getNeedsReconcile,
+  hasInstalledProject,
+  setNeedsReconcile,
+} from "../../platform/manifest.js";
+import * as skills from "../../platform/skills-installer.js";
+import { runMigrations, runMigrationsWithStatus } from "../migrations/index.js";
+import {
+  classifyUpdateTarget,
+  collectAgentRequiredSkills,
+  resolveUpdateVendors,
+  selectSkillsToPrune,
+  shouldCopyProjectAsset,
+} from "../update/run.js";
+
+describe("project asset copy filter", () => {
+  it.each([
+    "/tmp/release/.agents/skills/_version.json",
+    "/tmp/release/.agents/skills/oma-video/config/video-config.yaml",
+    "/tmp/release/.agents/skills/oma-image/config/image-config.yaml",
+  ])("does not recreate migrated state from %s", (path) => {
+    expect(shouldCopyProjectAsset(path)).toBe(false);
+  });
+
+  it("never copies release-development fixtures or user-owned evolution files", () => {
+    expect(
+      shouldCopyProjectAsset("/tmp/release/.agents/eval/oma-docs/task.yaml"),
+    ).toBe(false);
+    expect(
+      shouldCopyProjectAsset("/tmp/release/.agents/evolution/optimizer.md"),
+    ).toBe(false);
+  });
+
+  it("copies ordinary managed assets", () => {
+    expect(
+      shouldCopyProjectAsset("/tmp/release/.agents/skills/oma-video/SKILL.md"),
+    ).toBe(true);
+  });
+
+  it("preserves install metadata and does not recreate retired configs", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-copy-target-"));
+    const release = mkdtempSync(join(tmpdir(), "oma-update-copy-release-"));
+
+    try {
+      mkdirSync(join(root, ".agents", "skills"), { recursive: true });
+      writeFileSync(
+        join(root, ".agents", "skills", "_version.json"),
+        `${JSON.stringify({ version: "14.7.11", schemaVersion: 2, mode: "project" })}\n`,
+      );
+
+      mkdirSync(join(release, ".agents", "skills", "oma-video", "config"), {
+        recursive: true,
+      });
+      mkdirSync(join(release, ".agents", "skills", "oma-image", "config"), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(release, ".agents", "skills", "_version.json"),
+        '{"version":"14.7.11"}\n',
+      );
+      writeFileSync(
+        join(
+          release,
+          ".agents",
+          "skills",
+          "oma-video",
+          "config",
+          "video-config.yaml",
+        ),
+        "legacy: true\n",
+      );
+      writeFileSync(
+        join(
+          release,
+          ".agents",
+          "skills",
+          "oma-image",
+          "config",
+          "image-config.yaml",
+        ),
+        "legacy: true\n",
+      );
+
+      cpSync(join(release, ".agents"), join(root, ".agents"), {
+        recursive: true,
+        force: true,
+        filter: shouldCopyProjectAsset,
+      });
+
+      const metadata = JSON.parse(
+        readFileSync(join(root, ".agents", "skills", "_version.json"), "utf-8"),
+      );
+      expect(metadata).toMatchObject({ schemaVersion: 2, mode: "project" });
+      expect(
+        existsSync(
+          join(
+            root,
+            ".agents",
+            "skills",
+            "oma-video",
+            "config",
+            "video-config.yaml",
+          ),
+        ),
+      ).toBe(false);
+      expect(
+        existsSync(
+          join(
+            root,
+            ".agents",
+            "skills",
+            "oma-image",
+            "config",
+            "image-config.yaml",
+          ),
+        ),
+      ).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(release, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("whitelist-based skill filtering", () => {
+  it("getAllSkills should return only registered skills", () => {
+    const allSkills = skills.getAllSkills();
+    const skillNames = allSkills.map((s) => s.name);
+
+    expect(skillNames).toContain("oma-frontend");
+    expect(skillNames).toContain("oma-backend");
+    expect(skillNames).toContain("oma-architecture");
+    expect(skillNames).toContain("oma-pm");
+    expect(skillNames).toContain("oma-scm");
+
+    expect(skillNames).not.toContain(".DS_Store");
+    expect(skillNames).not.toContain("_version.json");
+    expect(skillNames).not.toContain("_shared");
+    expect(skillNames).not.toContain("my-custom-skill");
+  });
+
+  it("SKILLS registry should not contain internal files or hidden files", () => {
+    const allSkills = skills.getAllSkills();
+
+    for (const skill of allSkills) {
+      expect(skill.name).not.toMatch(/^\./);
+      expect(skill.name).not.toMatch(/^_/);
+      expect(skill.name).not.toMatch(/\.json$/);
+    }
+  });
+
+  it("getAllSkills should include all domain, coordination, and utility skills", () => {
+    const allSkills = skills.getAllSkills();
+    const skillNames = allSkills.map((s) => s.name);
+
+    const expectedSkills = [
+      "oma-frontend",
+      "oma-backend",
+      "oma-mobile",
+      "oma-architecture",
+      "oma-pm",
+      "oma-qa",
+      "oma-coordination",
+      "oma-orchestration",
+      "oma-debug",
+      "oma-scm",
+    ];
+
+    for (const expected of expectedSkills) {
+      expect(skillNames).toContain(expected);
+    }
+  });
+});
+
+describe("collectAgentRequiredSkills", () => {
+  it("collects skills from agent frontmatter and dedupes", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "oma-update-agents-"));
+    const agentsDir = join(cwd, ".agents", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(
+      join(agentsDir, "refactor-engineer.md"),
+      "---\nname: refactor-engineer\nskills:\n  - oma-refactor\n---\nbody\n",
+    );
+    writeFileSync(
+      join(agentsDir, "research-explorer.md"),
+      "---\nname: research-explorer\nskills:\n  - oma-search\n  - oma-refactor\n---\nbody\n",
+    );
+    writeFileSync(
+      join(agentsDir, "no-skills.md"),
+      "---\nname: bare\n---\nbody\n",
+    );
+
+    expect(collectAgentRequiredSkills(cwd)).toEqual([
+      "oma-refactor",
+      "oma-search",
+    ]);
+  });
+
+  it("returns empty when the agents dir is missing", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "oma-update-noagents-"));
+    expect(collectAgentRequiredSkills(cwd)).toEqual([]);
+  });
+});
+
+describe("selectSkillsToPrune (preserve skill selection on update)", () => {
+  const before = ["oma-backend", "oma-frontend"];
+  // After the bulk copy the project contains every skill the release ships.
+  const after = [
+    "oma-backend",
+    "oma-frontend",
+    "oma-market",
+    "oma-video",
+    "oma-voice",
+  ];
+
+  it("prunes skills that are new in the release and were not installed", () => {
+    expect(selectSkillsToPrune(before, after, false)).toEqual([
+      "oma-market",
+      "oma-video",
+      "oma-voice",
+    ]);
+  });
+
+  it("keeps every skill when --with-new-skills is set", () => {
+    expect(selectSkillsToPrune(before, after, true)).toEqual([]);
+  });
+
+  it("prunes nothing when no new skills were added", () => {
+    expect(selectSkillsToPrune(before, before, false)).toEqual([]);
+  });
+
+  it("never prunes a skill the user already had", () => {
+    const pruned = selectSkillsToPrune(before, after, false);
+    for (const kept of before) {
+      expect(pruned).not.toContain(kept);
+    }
+  });
+
+  it("never prunes a new skill that a shipped agent requires", () => {
+    const pruned = selectSkillsToPrune(before, after, false, ["oma-market"]);
+    expect(pruned).not.toContain("oma-market");
+    expect(pruned).toEqual(["oma-video", "oma-voice"]);
+  });
+
+  it("agent-required skills do not resurrect unrelated pruning", () => {
+    // required set only protects; everything else behaves as before
+    const pruned = selectSkillsToPrune(before, after, false, [
+      "oma-backend", // already installed — no-op
+      "oma-nonexistent", // not shipped — no-op
+    ]);
+    expect(pruned).toEqual(["oma-market", "oma-video", "oma-voice"]);
+  });
+
+  it("ignores non-skill directories (e.g. _version.json, .DS_Store)", () => {
+    const noisy = [...after, "_version.json", ".DS_Store", "custom-thing"];
+    expect(selectSkillsToPrune(before, noisy, false)).toEqual([
+      "oma-market",
+      "oma-video",
+      "oma-voice",
+    ]);
+  });
+
+  it("returns a sorted, stable list", () => {
+    const unsorted = ["oma-voice", "oma-market", "oma-backend", "oma-video"];
+    expect(selectSkillsToPrune(["oma-backend"], unsorted, false)).toEqual([
+      "oma-market",
+      "oma-video",
+      "oma-voice",
+    ]);
+  });
+});
+
+describe("update stack/ preservation logic", () => {
+  it("should detect legacy files for migration", () => {
+    const mockExistsSync = vi.fn((p: string) => {
+      if (p.includes("resources/snippets.md")) return true;
+      if (p.includes("/stack")) return false;
+      return false;
+    });
+
+    const legacyFiles = ["snippets.md", "tech-stack.md", "api-template.py"];
+    const hasLegacyFiles = legacyFiles.some((f) =>
+      mockExistsSync(`/project/.agents/skills/oma-backend/resources/${f}`),
+    );
+    const hasBackendStack = mockExistsSync(
+      "/project/.agents/skills/oma-backend/stack",
+    );
+
+    expect(hasLegacyFiles).toBe(true);
+    expect(hasBackendStack).toBe(false);
+    expect(hasLegacyFiles && !hasBackendStack).toBe(true);
+  });
+
+  it("should not migrate when stack/ already exists", () => {
+    const mockExistsSync = vi.fn((p: string) => {
+      if (p.includes("resources/snippets.md")) return true;
+      if (p.includes("/stack")) return true;
+      return false;
+    });
+
+    const legacyFiles = ["snippets.md", "tech-stack.md", "api-template.py"];
+    const hasLegacyFiles = legacyFiles.some((f) =>
+      mockExistsSync(`/project/.agents/skills/oma-backend/resources/${f}`),
+    );
+    const hasBackendStack = mockExistsSync(
+      "/project/.agents/skills/oma-backend/stack",
+    );
+
+    expect(hasLegacyFiles).toBe(true);
+    expect(hasBackendStack).toBe(true);
+    expect(hasLegacyFiles && !hasBackendStack).toBe(false);
+  });
+
+  it("stack.yaml should contain migrated source marker", () => {
+    const expectedStackYaml =
+      "language: python\nframework: fastapi\norm: sqlalchemy\nsource: migrated\n";
+
+    expect(expectedStackYaml).toContain("language: python");
+    expect(expectedStackYaml).toContain("framework: fastapi");
+    expect(expectedStackYaml).toContain("orm: sqlalchemy");
+    expect(expectedStackYaml).toContain("source: migrated");
+  });
+});
+
+describe("hasInstalledProject", () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    for (const root of tempRoots) {
+      rmSync(root, { recursive: true, force: true });
+    }
+    tempRoots.length = 0;
+  });
+
+  it("treats an existing .agents tree without _version.json as installed", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents", "skills", "oma-backend"), {
+      recursive: true,
+    });
+    mkdirSync(join(root, ".agents", "workflows"), { recursive: true });
+    writeFileSync(join(root, ".agents", "oma-config.yaml"), "language: ko\n", {
+      encoding: "utf-8",
+      flag: "w",
+    });
+
+    expect(hasInstalledProject(root)).toBe(true);
+  });
+
+  it("does not treat a random directory as installed", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-"));
+    tempRoots.push(root);
+
+    expect(hasInstalledProject(root)).toBe(false);
+  });
+});
+
+describe("classifyUpdateTarget", () => {
+  it("treats versioned installs as ready", () => {
+    expect(classifyUpdateTarget("4.22.1", true)).toBe("ready");
+    expect(classifyUpdateTarget("4.22.1", false)).toBe("ready");
+  });
+
+  it("treats .agents installs without version metadata as legacy", () => {
+    expect(classifyUpdateTarget(null, true)).toBe("legacy");
+  });
+
+  it("treats directories without an install as missing", () => {
+    expect(classifyUpdateTarget(null, false)).toBe("missing");
+  });
+});
+
+describe("resolveUpdateVendors", () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    for (const root of tempRoots) {
+      rmSync(root, { recursive: true, force: true });
+    }
+    tempRoots.length = 0;
+  });
+
+  it("defaults to vendors with existing project roots only", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-vendors-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    mkdirSync(join(root, ".pi"), { recursive: true });
+    mkdirSync(join(root, ".qwen"), { recursive: true });
+
+    expect(resolveUpdateVendors(root)).toEqual(["claude", "pi", "qwen"]);
+  });
+
+  it.each([
+    ["vendors:\n  - cursor\n", ["cursor"]],
+    ["vendors: []\n", []],
+  ])("respects an explicit vendor selection: %s", (config, expected) => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-vendors-"));
+    tempRoots.push(root);
+
+    for (const dir of [".agents", ".cursor", ".commandcode", ".kiro"]) {
+      mkdirSync(join(root, dir), { recursive: true });
+    }
+    writeFileSync(join(root, ".agents", "oma-config.yaml"), config);
+
+    expect(resolveUpdateVendors(root)).toEqual(expected);
+    expect(resolveUpdateVendors(root, { vendor: "kiro" })).toEqual(["kiro"]);
+    expect(resolveUpdateVendors(root, { all: true })).toContain("commandcode");
+  });
+
+  it("does not infer HOME-only vendors from project markers", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-vendors-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    writeFileSync(join(root, ".agents", "hooks.json"), "{}\n");
+    writeFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "vendors:\n  - codex\n",
+    );
+
+    expect(resolveUpdateVendors(root)).not.toContain("antigravity");
+  });
+
+  it("retains explicitly recorded HOME-only vendors", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-vendors-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "vendors:\n  - antigravity\n",
+    );
+
+    expect(resolveUpdateVendors(root)).toContain("antigravity");
+  });
+
+  it("--vendor explicitly targets vendors even when directories do not exist", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-vendors-"));
+    tempRoots.push(root);
+
+    expect(resolveUpdateVendors(root, { vendor: "claude,pi,qwen" })).toEqual([
+      "claude",
+      "pi",
+      "qwen",
+    ]);
+  });
+
+  it("--all targets all project-scoped vendors without HOME-only exports", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-vendors-"));
+    tempRoots.push(root);
+
+    const vendors = resolveUpdateVendors(root, { all: true });
+
+    expect(vendors).toContain("claude");
+    expect(vendors).toContain("grok");
+    expect(vendors).toContain("pi");
+    expect(vendors).toContain("qwen");
+    expect(vendors).not.toContain("antigravity");
+    expect(vendors).not.toContain("hermes");
+  });
+
+  it("rejects unsupported --vendor values", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-vendors-"));
+    tempRoots.push(root);
+
+    expect(() =>
+      resolveUpdateVendors(root, { vendor: "claude,unknown" }),
+    ).toThrow("Unsupported vendor(s): unknown");
+  });
+});
+
+describe("reconcile: migrations trigger full update even when version matches", () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    for (const root of tempRoots) {
+      rmSync(root, { recursive: true, force: true });
+    }
+    tempRoots.length = 0;
+  });
+
+  it("runMigrations returns actions when legacy config exists — triggers reconcile", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-"));
+    tempRoots.push(root);
+
+    // Template oma-config.yaml (from previous cpSync)
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "language: en\nmodel_preset: claude\n",
+      "utf-8",
+    );
+
+    // Legacy user config still present
+    mkdirSync(join(root, ".agents", "config"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "config", "user-preferences.yaml"),
+      "language: ko\n",
+      "utf-8",
+    );
+
+    const actions = runMigrations(root);
+
+    // Migration 003 should fire even though oma-config.yaml exists
+    expect(actions.length).toBeGreaterThan(0);
+    expect(actions).toContain(
+      ".agents/config/user-preferences.yaml → .agents/oma-config.yaml",
+    );
+
+    // Simulating update logic: migrations applied → should NOT early return
+    const localVersion = "4.26.1";
+    const remoteVersion = "4.26.1";
+    const shouldEarlyReturn =
+      localVersion === remoteVersion && actions.length === 0;
+    expect(shouldEarlyReturn).toBe(false);
+  });
+
+  it("runMigrations returns empty when no legacy state — allows early return", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-"));
+    tempRoots.push(root);
+
+    // Only modern config — no legacy files
+    mkdirSync(join(root, ".agents"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "language: en\nmodel_preset: claude\n",
+      "utf-8",
+    );
+
+    const actions = runMigrations(root);
+
+    expect(actions).toHaveLength(0);
+
+    // No migrations → early return is safe
+    const localVersion = "4.26.1";
+    const remoteVersion = "4.26.1";
+    const shouldEarlyReturn =
+      localVersion === remoteVersion && actions.length === 0;
+    expect(shouldEarlyReturn).toBe(true);
+  });
+
+  it("migration 004 (global CLAUDE.md cleanup) also triggers reconcile", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-"));
+    tempRoots.push(root);
+    vi.stubEnv("HOME", root);
+
+    // Modern .agents/ setup (no legacy config)
+    mkdirSync(join(root, ".agents"), { recursive: true });
+
+    // Global CLAUDE.md with OMA block (will be cleaned by migration 004)
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "CLAUDE.md"),
+      "<!-- OMA:START -->\noma content\n<!-- OMA:END -->",
+    );
+
+    const actions = runMigrations(root);
+
+    expect(actions.length).toBeGreaterThan(0);
+    expect(existsSync(join(root, ".claude", "CLAUDE.md"))).toBe(false);
+
+    // Migrations applied → reconcile should proceed (to re-run vendor docs merge etc.)
+    const localVersion = "4.26.1";
+    const remoteVersion = "4.26.1";
+    const shouldEarlyReturn =
+      localVersion === remoteVersion && actions.length === 0;
+    expect(shouldEarlyReturn).toBe(false);
+  });
+
+  it("multiple migrations firing together all trigger reconcile", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-"));
+    tempRoots.push(root);
+    vi.stubEnv("HOME", root);
+
+    // Legacy config file
+    mkdirSync(join(root, ".agents", "config"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "config", "user-preferences.yaml"),
+      "language: ko\n",
+      "utf-8",
+    );
+
+    // Global CLAUDE.md with OMA block
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "CLAUDE.md"),
+      "# Notes\n<!-- OMA:START -->\nblock\n<!-- OMA:END -->\n",
+    );
+
+    const actions = runMigrations(root);
+
+    // Both migration 003 and 004 should fire
+    expect(actions.length).toBeGreaterThanOrEqual(2);
+    expect(actions).toContain(
+      ".agents/config/user-preferences.yaml → .agents/oma-config.yaml",
+    );
+    expect(actions.some((a) => a.includes("CLAUDE.md"))).toBe(true);
+
+    // User config preserved through 003 (rename) → 008 (model_preset added)
+    const finalConfig = readFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "utf-8",
+    );
+    expect(finalConfig).toContain("language: ko");
+    expect(finalConfig).toMatch(/model_preset:\s*\S+/);
+
+    // Global CLAUDE.md cleaned (user content preserved)
+    const globalMd = readFileSync(join(root, ".claude", "CLAUDE.md"), "utf-8");
+    expect(globalMd).toContain("# Notes");
+    expect(globalMd).not.toContain("OMA:START");
+  });
+});
+
+describe("migration backup cleanup after successful update", () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    for (const root of tempRoots) {
+      rmSync(root, { recursive: true, force: true });
+    }
+    tempRoots.length = 0;
+  });
+
+  it("backup dir is created by migration 002 when content differs", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-backup-cleanup-"));
+    tempRoots.push(root);
+
+    // Legacy file at old path with custom content
+    mkdirSync(join(root, ".agents", "skills", "_shared"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "skills", "_shared", "context-loading.md"),
+      "customized content\n",
+      "utf-8",
+    );
+
+    // New path with different (canonical) content
+    mkdirSync(join(root, ".agents", "skills", "_shared", "core"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, ".agents", "skills", "_shared", "core", "context-loading.md"),
+      "canonical content\n",
+      "utf-8",
+    );
+
+    runMigrations(root);
+
+    const backupDir = join(root, ".agents", "backup", "002-shared-layout");
+    expect(existsSync(backupDir)).toBe(true);
+
+    // Simulate: successful update would clean this up
+    rmSync(join(root, ".agents", "backup"), { recursive: true, force: true });
+    expect(existsSync(backupDir)).toBe(false);
+  });
+
+  it("backup dir is not created when content is identical", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-backup-cleanup-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents", "skills", "_shared", "core"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(root, ".agents", "skills", "_shared", "context-loading.md"),
+      "same content\n",
+      "utf-8",
+    );
+    writeFileSync(
+      join(root, ".agents", "skills", "_shared", "core", "context-loading.md"),
+      "same content\n",
+      "utf-8",
+    );
+
+    runMigrations(root);
+
+    const backupDir = join(root, ".agents", "backup", "002-shared-layout");
+    expect(existsSync(backupDir)).toBe(false);
+  });
+});
+
+describe("persisted needsReconcile flag", () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    for (const root of tempRoots) {
+      rmSync(root, { recursive: true, force: true });
+    }
+    tempRoots.length = 0;
+  });
+
+  it("getNeedsReconcile returns false when _version.json does not exist", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-flag-"));
+    tempRoots.push(root);
+
+    expect(getNeedsReconcile(root)).toBe(false);
+  });
+
+  it("getNeedsReconcile returns false when flag is not set", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-flag-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents", "skills"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "skills", "_version.json"),
+      JSON.stringify({ version: "4.26.1" }),
+      "utf-8",
+    );
+
+    expect(getNeedsReconcile(root)).toBe(false);
+  });
+
+  it("setNeedsReconcile persists flag and getNeedsReconcile reads it", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-flag-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents", "skills"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "skills", "_version.json"),
+      JSON.stringify({ version: "4.26.1" }),
+      "utf-8",
+    );
+
+    setNeedsReconcile(root, true);
+    expect(getNeedsReconcile(root)).toBe(true);
+
+    // Version preserved
+    const json = JSON.parse(
+      readFileSync(join(root, ".agents", "skills", "_version.json"), "utf-8"),
+    );
+    expect(json.version).toBe("4.26.1");
+  });
+
+  it("setNeedsReconcile(false) clears the flag cleanly", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-flag-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents", "skills"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "skills", "_version.json"),
+      JSON.stringify({ version: "4.26.1", needsReconcile: true }),
+      "utf-8",
+    );
+
+    expect(getNeedsReconcile(root)).toBe(true);
+
+    setNeedsReconcile(root, false);
+    expect(getNeedsReconcile(root)).toBe(false);
+
+    // Flag removed from JSON, not just set to false
+    const json = JSON.parse(
+      readFileSync(join(root, ".agents", "skills", "_version.json"), "utf-8"),
+    );
+    expect(json.needsReconcile).toBeUndefined();
+    expect(json.version).toBe("4.26.1");
+  });
+
+  it("persisted flag prevents early return even when migrations are no-op", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-flag-"));
+    tempRoots.push(root);
+
+    // Modern setup — no legacy files
+    mkdirSync(join(root, ".agents", "skills"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "language: en\nmodel_preset: claude\n",
+      "utf-8",
+    );
+    // Simulates: previous reconcile attempt failed mid-download.
+    // Includes mode + schemaVersion=2 so migration 012 (backfill mode) is a no-op.
+    writeFileSync(
+      join(root, ".agents", "skills", "_version.json"),
+      JSON.stringify({
+        version: "4.26.1",
+        mode: "project",
+        schemaVersion: 2,
+        needsReconcile: true,
+      }),
+      "utf-8",
+    );
+
+    const migrationStatus = runMigrationsWithStatus(root);
+    expect(migrationStatus.actions).toHaveLength(0);
+
+    // Even though migrations are no-op, persisted flag forces reconcile
+    const needsReconcile =
+      migrationStatus.requiresReconcile || getNeedsReconcile(root);
+    expect(needsReconcile).toBe(true);
+
+    const localVersion = "4.26.1";
+    const remoteVersion = "4.26.1";
+    const shouldEarlyReturn = localVersion === remoteVersion && !needsReconcile;
+    expect(shouldEarlyReturn).toBe(false);
+  });
+
+  it("no flag + no migrations → allows early return", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-reconcile-flag-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents", "skills"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "oma-config.yaml"),
+      "language: en\nmodel_preset: claude\n",
+      "utf-8",
+    );
+    // Seed with mode + schemaVersion=2 so migration 012 is a no-op.
+    writeFileSync(
+      join(root, ".agents", "skills", "_version.json"),
+      JSON.stringify({
+        version: "4.26.1",
+        mode: "project",
+        schemaVersion: 2,
+      }),
+      "utf-8",
+    );
+
+    const migrationStatus = runMigrationsWithStatus(root);
+    const needsReconcile =
+      migrationStatus.requiresReconcile || getNeedsReconcile(root);
+
+    expect(needsReconcile).toBe(false);
+
+    const localVersion = "4.26.1";
+    const remoteVersion = "4.26.1";
+    const shouldEarlyReturn = localVersion === remoteVersion && !needsReconcile;
+    expect(shouldEarlyReturn).toBe(true);
+  });
+
+  it("prunes .agents/eval directory during update", () => {
+    const root = mkdtempSync(join(tmpdir(), "oma-update-eval-"));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, ".agents", "eval", "some-skill"), { recursive: true });
+    writeFileSync(
+      join(root, ".agents", "eval", "some-skill", "fixture.yaml"),
+      "test",
+    );
+
+    const evalDir = join(root, ".agents", "eval");
+    expect(existsSync(evalDir)).toBe(true);
+
+    if (existsSync(evalDir)) {
+      rmSync(evalDir, { recursive: true, force: true });
+    }
+    expect(existsSync(evalDir)).toBe(false);
+  });
+});

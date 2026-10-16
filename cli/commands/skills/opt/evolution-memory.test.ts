@@ -1,0 +1,422 @@
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { readEvents, sessionsDir } from "../../../state/events.js";
+import type { MemoryProvider } from "../../../types/memory.js";
+import type { SkillUtilityReport, TaskFixture } from "../eval.js";
+import {
+  createSkillEvolutionRecorder,
+  loadLocalSkillEvolutionKnowledge,
+  redactEvolutionText,
+  skillEvolutionSuiteHash,
+} from "./evolution-memory.js";
+
+function tasks(): TaskFixture[] {
+  return Array.from({ length: 5 }, (_, index) => ({
+    id: `task-${index}`,
+    skill: "test-skill",
+    domain: "test",
+    prompt: `prompt ${index}`,
+    checker: { type: "assert" as const, expect_contains: ["ok"] },
+    weight: 1,
+  }));
+}
+
+function report(): SkillUtilityReport {
+  return {
+    skill: "test-skill",
+    taskCount: 5,
+    skippedFiles: [],
+    baselineScore: 0,
+    treatmentScore: 0.2,
+    utilityLift: 0.2,
+    utilityStdDev: 0,
+    findings: [
+      {
+        taskId: "task-0",
+        baseline: 0,
+        treatment: 0,
+        lift: 0,
+        evidence: {
+          domain: "test",
+          prompt: "api_key=SUPERSECRETVALUE",
+          checker: { type: "assert", expect_contains: ["ok"] },
+          baselineOutput: "failed",
+          treatmentOutput: "still failed",
+        },
+      },
+    ],
+    negativeTransfer: [],
+    decision: "pass",
+    coverage: "ok",
+    isolation: "n/a",
+  };
+}
+
+describe("skill evolution memory", () => {
+  const cleanup: string[] = [];
+
+  afterEach(() => {
+    for (const path of cleanup.splice(0)) {
+      rmSync(path, { recursive: true, force: true });
+    }
+  });
+
+  it("computes a deterministic suite hash independent of task order", () => {
+    const fixtures = tasks();
+    expect(skillEvolutionSuiteHash(fixtures)).toBe(
+      skillEvolutionSuiteHash([...fixtures].reverse()),
+    );
+  });
+
+  it("redacts common secret forms before evidence persistence", () => {
+    expect(redactEvolutionText("api_key=SUPERSECRETVALUE")).toBe(
+      "api_key=[REDACTED]",
+    );
+    expect(redactEvolutionText("sk-abcdefghijklmnop1234")).toBe("[REDACTED]");
+  });
+
+  it("persists scoped evidence, patterns, and rejected proposals through L1", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "oma-skill-memory-"));
+    cleanup.push(workspace);
+    const remembered: string[] = [];
+    const provider: MemoryProvider = {
+      name: "agentmemory",
+      async status() {
+        return { provider: "agentmemory", reachable: true };
+      },
+      async observe() {
+        return true;
+      },
+      async remember(payload) {
+        remembered.push(payload.content);
+        return true;
+      },
+      async recall() {
+        return [
+          {
+            text: "[skill-evolution:test-skill:wrong] unrelated",
+            score: 10,
+          },
+        ];
+      },
+    };
+    const fixtures = tasks();
+    const suiteHash = skillEvolutionSuiteHash(fixtures);
+    const scope = {
+      sourceRuntime: "optimizer-a",
+      targetRuntime: "inference-b",
+      environmentHash: "env-1",
+    };
+    provider.recall = async () => [
+      {
+        text: `[skill-evolution:test-skill:${suiteHash}:optimizer-a:inference-b:env-1] prior successful strategy`,
+        score: 9,
+      },
+      {
+        text: "[skill-evolution:other:scope] must be filtered",
+        score: 20,
+      },
+      {
+        text: `[skill-evolution:test-skill:${suiteHash}:optimizer-a:inference-b:env-1] Proposal rejected: old verdict Reason: final-test`,
+        score: 20,
+      },
+      {
+        text: `[skill-evolution:test-skill:${suiteHash}:optimizer-a:inference-b:env-1] Proposal inconclusive: unavailable evaluation`,
+        score: 20,
+      },
+    ];
+
+    const recorder = await createSkillEvolutionRecorder({
+      workspace,
+      skillId: "test-skill",
+      tasks: fixtures,
+      provider,
+      ...scope,
+    });
+    expect(recorder.knowledge.patterns).toEqual([
+      `[skill-evolution:test-skill:${suiteHash}:optimizer-a:inference-b:env-1] prior successful strategy`,
+    ]);
+
+    await recorder.recordEvidence(0, report());
+    await recorder.recordPatterns(0, [
+      {
+        id: "pattern-1",
+        summary: "Retry with the structured fallback.",
+        evidenceIds: ["task-0"],
+        confidence: 0.8,
+      },
+    ]);
+    const edit = {
+      op: "add" as const,
+      anchor: "## Rules",
+      after: "\n- fallback",
+    };
+    await recorder.recordProposal({
+      epoch: 0,
+      edit,
+      editKey: JSON.stringify(edit),
+      outcome: "rejected",
+      reason: "no-validation-lift",
+      deltaLift: 0,
+    });
+    await recorder.complete({
+      skill: "test-skill",
+      baselineLift: 0,
+      finalLift: 0,
+      epochs: [],
+      acceptedEdits: [],
+      rejectedCount: 1,
+      finalSkillMd: "---\nname: test\ndescription: test\n---\n",
+      diff: "",
+      applied: false,
+    });
+
+    const sessionEntries = readdirSync(sessionsDir(workspace)).filter(
+      (entry) => entry !== "_index.json",
+    );
+    expect(sessionEntries).toHaveLength(1);
+    const events = readEvents(workspace, sessionEntries[0] ?? "");
+    expect(events.map((event) => event.kind).sort()).toEqual(
+      [
+        "session.created",
+        "skill.evolution.started",
+        "skill.rollout.recorded",
+        "skill.pattern.consolidated",
+        "skill.proposal.created",
+        "skill.proposal.gated",
+        "skill.evolution.completed",
+        "session.ended",
+      ].sort(),
+    );
+
+    const artifact = join(
+      workspace,
+      ".agents",
+      "results",
+      "skill-evolution",
+      "test-skill",
+      `${sessionEntries[0]}.jsonl`,
+    );
+    const artifactText = readFileSync(artifact, "utf-8");
+    expect(artifactText).toContain("[REDACTED]");
+    expect(artifactText).not.toContain("SUPERSECRETVALUE");
+    expect(remembered.some((text) => text.includes("Pattern:"))).toBe(true);
+    expect(remembered.some((text) => text.includes("Proposal rejected:"))).toBe(
+      true,
+    );
+
+    const loaded = loadLocalSkillEvolutionKnowledge(
+      workspace,
+      "test-skill",
+      suiteHash,
+      scope,
+    );
+    expect(loaded.patterns).toContain("Retry with the structured fallback.");
+    expect(loaded.rejectedEditKeys).toEqual([JSON.stringify(edit)]);
+    expect(
+      loadLocalSkillEvolutionKnowledge(workspace, "test-skill", suiteHash, {
+        ...scope,
+        environmentHash: "env-2",
+      }).patterns,
+    ).toEqual([]);
+  });
+
+  it.each([undefined, "negative-transfer", "negative-transfer-unmeasured"])(
+    "keeps final-test feedback audit-only (blocker: %s)",
+    async (blocker) => {
+      const workspace = mkdtempSync(join(tmpdir(), "oma-skill-final-gate-"));
+      cleanup.push(workspace);
+      const fixtures = tasks();
+      const remember = vi.fn(async () => true);
+      const observe = vi.fn(async () => true);
+      const recorder = await createSkillEvolutionRecorder({
+        workspace,
+        skillId: "test-skill",
+        tasks: fixtures,
+        provider: {
+          name: "agentmemory",
+          async status() {
+            return { provider: "agentmemory", reachable: true };
+          },
+          observe,
+          remember,
+        },
+      });
+      const edit = {
+        op: "add" as const,
+        anchor: "## Rules",
+        after: "\n- overfit",
+      };
+      const editKey = JSON.stringify(edit);
+      await recorder.recordProposal({
+        epoch: 0,
+        edit,
+        editKey,
+        outcome: "accepted",
+        reason: "accepted",
+        deltaLift: 1,
+      });
+      const priorKnowledge = structuredClone(recorder.knowledge);
+      remember.mockClear();
+      observe.mockClear();
+      await recorder.recordProposal({
+        epoch: 1,
+        edit,
+        editKey,
+        outcome: "rejected",
+        reason: "final-test",
+        deltaLift: -1,
+      });
+      expect(recorder.knowledge).toEqual(priorKnowledge);
+      expect(remember).not.toHaveBeenCalled();
+      expect(observe).not.toHaveBeenCalled();
+      await recorder.complete({
+        skill: "test-skill",
+        baselineLift: 0,
+        finalLift: 1,
+        epochs: [],
+        acceptedEdits: [edit],
+        rejectedCount: 0,
+        finalSkillMd: "---\nname: test\ndescription: test\n---\n",
+        diff: "diff",
+        applied: false,
+        finalTest: {
+          baselineLift: 0,
+          candidateLift: 0,
+          passed: false,
+          blocker,
+        },
+      });
+      expect(remember).not.toHaveBeenCalled();
+
+      const loaded = loadLocalSkillEvolutionKnowledge(
+        workspace,
+        "test-skill",
+        skillEvolutionSuiteHash(fixtures),
+      );
+      expect(loaded.rejectedEditKeys).not.toContain(editKey);
+      expect(loaded.acceptedEditKeys).toContain(editKey);
+      const sessionEntries = readdirSync(sessionsDir(workspace)).filter(
+        (entry) => entry !== "_index.json",
+      );
+      const events = readEvents(workspace, sessionEntries[0] ?? "");
+      expect(
+        events.some(
+          (event) =>
+            event.kind === "skill.proposal.gated" &&
+            event.payload?.reason === "final-test",
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("does not turn inconclusive evaluations into rejected knowledge", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "oma-skill-inconclusive-"));
+    cleanup.push(workspace);
+    const fixtures = tasks();
+    const recorder = await createSkillEvolutionRecorder({
+      workspace,
+      skillId: "test-skill",
+      tasks: fixtures,
+      provider: {
+        name: "none",
+        status: async () => ({ provider: "none", reachable: false }),
+        observe: async () => false,
+        remember: async () => false,
+      },
+    });
+    const edit = {
+      op: "add" as const,
+      anchor: "## Rules",
+      after: "retry later",
+    };
+    await recorder.recordProposal({
+      epoch: 0,
+      edit,
+      editKey: JSON.stringify(edit),
+      outcome: "inconclusive",
+      reason: "negative-transfer-unmeasured",
+      deltaLift: 1,
+    });
+    expect(recorder.knowledge.rejectedEditKeys).toEqual([]);
+    expect(
+      loadLocalSkillEvolutionKnowledge(
+        workspace,
+        "test-skill",
+        skillEvolutionSuiteHash(fixtures),
+      ).rejectedEditKeys,
+    ).toEqual([]);
+  });
+});
+
+describe("memory ablation", () => {
+  it("starts from empty knowledge with recall off while still recording the run", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } =
+      await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { createNoneMemoryProvider } = await import(
+      "../../../state/memory-provider.js"
+    );
+    const workspace = mkdtempSync(join(tmpdir(), "oma-memory-ablation-"));
+    const tasks = [
+      {
+        id: "t1",
+        skill: "demo",
+        domain: "d",
+        prompt: "p",
+        checker: { type: "assert" as const, expect_contains: ["x"] },
+        weight: 1,
+      },
+    ];
+    const artifactDir = join(
+      workspace,
+      ".agents",
+      "results",
+      "skill-evolution",
+      "demo",
+    );
+    mkdirSync(artifactDir, { recursive: true });
+    const recorder = await createSkillEvolutionRecorder({
+      workspace,
+      skillId: "demo",
+      tasks,
+      provider: createNoneMemoryProvider(),
+      recall: false,
+      procedureHash: "proc-1",
+    });
+    expect(recorder.knowledge.patterns).toEqual([]);
+    expect(recorder.knowledge.rejectedEditKeys).toEqual([]);
+    await recorder.complete({
+      skill: "demo",
+      baselineLift: 0,
+      finalLift: 0.2,
+      epochs: [],
+      acceptedEdits: [],
+      rejectedCount: 0,
+      finalSkillMd: "",
+      diff: "",
+      applied: false,
+      promotion: { eligible: false, reasons: ["x"] },
+      finalTest: { baselineLift: 0, candidateLift: 0.1, passed: true },
+    });
+    const artifact = readdirSync(artifactDir).find((f) => f.endsWith(".jsonl"));
+    const lines = readFileSync(join(artifactDir, artifact ?? ""), "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(lines.at(-1)).toMatchObject({
+      type: "run-summary",
+      status: "completed",
+      memory: "none",
+      procedureHash: "proc-1",
+      finalLift: 0.2,
+      finalTestPassed: true,
+      promotionEligible: false,
+      applied: false,
+    });
+    writeFileSync(join(workspace, "keep"), "");
+  });
+});

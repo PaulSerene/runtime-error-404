@@ -1,0 +1,176 @@
+import { z } from "zod";
+import {
+  BraveConfigSchema,
+  HonchoConfigSchema,
+  ProvidersSchema,
+} from "../../utils/providers.js";
+
+// ---------------------------------------------------------------------------
+// AgentSpec — object only (no string shorthand)
+// ---------------------------------------------------------------------------
+
+const ModelSlugSchema = z
+  .string()
+  .regex(
+    /^[a-z][a-z0-9-]*\/[a-z0-9][a-z0-9.-]+$/,
+    "Model slug must be in owner/model format (e.g. openai/gpt-5.4)",
+  );
+
+const EffortLevelSchema = z.enum(["none", "low", "medium", "high", "xhigh"]);
+
+const MemoryTierSchema = z.enum(["user", "project", "local"]);
+
+const AgentSpecSchema = z.object({
+  model: ModelSlugSchema,
+  effort: EffortLevelSchema.optional(),
+  thinking: z.boolean().optional(),
+  memory: MemoryTierSchema.optional(),
+});
+
+export type AgentSpec = z.infer<typeof AgentSpecSchema>;
+
+// ---------------------------------------------------------------------------
+// Zod schemas for runtime validation
+// ---------------------------------------------------------------------------
+
+const AgentIdValues = [
+  "orchestrator",
+  "architecture",
+  "qa",
+  "pm",
+  "backend",
+  "frontend",
+  "mobile",
+  "db",
+  "debug",
+  "tf-infra",
+  "retrieval",
+] as const;
+
+const _AgentIdSchema = z.enum(AgentIdValues);
+
+// Partial record — zod v4 makes z.record exhaustive over enum keys. Use a
+// plain object with all 11 entries optional so users can override subsets.
+const AgentsMapSchema = z
+  .object({
+    orchestrator: AgentSpecSchema.optional(),
+    architecture: AgentSpecSchema.optional(),
+    qa: AgentSpecSchema.optional(),
+    pm: AgentSpecSchema.optional(),
+    backend: AgentSpecSchema.optional(),
+    frontend: AgentSpecSchema.optional(),
+    mobile: AgentSpecSchema.optional(),
+    db: AgentSpecSchema.optional(),
+    debug: AgentSpecSchema.optional(),
+    refactor: AgentSpecSchema.optional(),
+    docs: AgentSpecSchema.optional(),
+    "tf-infra": AgentSpecSchema.optional(),
+    explore: AgentSpecSchema.optional(),
+    eval: AgentSpecSchema.optional(),
+  })
+  .strict();
+
+const OmaDocsConfigSchema = z
+  .object({
+    auto_verify: z.boolean().optional(),
+    check_urls: z.boolean().optional(),
+    exclude: z.array(z.string()).optional(),
+  })
+  .strict();
+
+/** One sparse skill override section — see design 024 §4. */
+const SkillSectionSchema = z.record(z.string(), z.unknown()).optional();
+
+export const OmaConfigSchema = z
+  .object({
+    language: z.string().default("en"),
+    model_preset: z.string().min(1),
+    free: z
+      .object({
+        base_url: z.string().min(1).optional(),
+        api_key_env: z
+          .string()
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+          .optional(),
+        model: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    date_format: z.enum(["ISO", "US", "EU"]).optional(),
+    timezone: z.string().optional(),
+    auto_update_cli: z.boolean().optional(),
+    telemetry: z.boolean().optional(),
+    providers: ProvidersSchema.optional(),
+    brave: BraveConfigSchema.optional(),
+    honcho: HonchoConfigSchema.optional(),
+    agents: AgentsMapSchema.optional(),
+    models: z.record(z.string(), z.unknown()).optional(),
+    custom_presets: z.record(z.string(), z.unknown()).optional(),
+    // Installer vendor selection (a list). Older templates documented an
+    // unread `vendors.pi` map; accept it so those files still parse.
+    vendors: z
+      .union([z.array(z.string()), z.record(z.string(), z.unknown())])
+      .optional(),
+    session: z.unknown().optional(),
+    docs: OmaDocsConfigSchema.optional(),
+    // Sparse per-skill overrides (design 024). Deliberately unvalidated shapes:
+    // each skill owns its own key set, and a strict mirror here would reject a
+    // key the day a skill adds one, taking the whole config down with it.
+    video: SkillSectionSchema,
+    image: SkillSectionSchema,
+    voice: SkillSectionSchema,
+    hwp: SkillSectionSchema,
+    pdf: SkillSectionSchema,
+    scholar: SkillSectionSchema,
+    default_cli: z.string().optional(),
+  })
+  .passthrough();
+
+// ---------------------------------------------------------------------------
+// Zod schemas for VendorConfig and CliConfig
+// ---------------------------------------------------------------------------
+
+const VendorConfigSchema = z
+  .object({
+    command: z.string().optional(),
+    subcommand: z.string().optional(),
+    prompt_flag: z
+      .string()
+      .optional()
+      .transform((value) => {
+        if (value === undefined) return undefined;
+        const normalized = value.trim().toLowerCase();
+        if (
+          normalized === "" ||
+          normalized === "none" ||
+          normalized === "null"
+        ) {
+          return null;
+        }
+        return value;
+      }),
+    auto_approve_flag: z.string().optional(),
+    read_only_flag: z.string().optional(),
+    output_format_flag: z.string().optional(),
+    output_format: z.string().optional(),
+    model_flag: z.string().optional(),
+    default_model: z.string().optional(),
+    isolation_env: z.string().optional(),
+    isolation_flags: z.string().optional(),
+  })
+  .passthrough()
+  .transform((value) => ({
+    ...value,
+    prompt_flag: value.prompt_flag ?? undefined,
+  }));
+
+// `active_vendor` is deliberately absent: design 024 §4.6 removed it as a
+// resolution tier. `.passthrough()` still tolerates it in a user's file.
+export const CliConfigSchema = z
+  .object({
+    vendors: z.record(z.string(), VendorConfigSchema).optional(),
+  })
+  .passthrough()
+  .transform((value) => ({
+    vendors: value.vendors ?? {},
+  }));

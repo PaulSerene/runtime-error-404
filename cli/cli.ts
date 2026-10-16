@@ -1,0 +1,223 @@
+#!/usr/bin/env node
+import { Command, Option } from "commander";
+import pkg from "./package.json";
+import {
+  resolveInstallContext,
+  setInstallContext,
+} from "./platform/install-context.js";
+import type { CommandSurface } from "./utils/command-surface.js";
+import { installPipeSafeConsole } from "./utils/pipe-safe-console.js";
+
+const VERSION = pkg.version;
+
+installPipeSafeConsole();
+
+const program = new Command();
+let commandSurface: CommandSurface | undefined;
+
+program
+  .name("oh-my-agent")
+  .description("Multi-Agent Orchestrator for AI IDEs")
+  .version(VERSION)
+  .option(
+    "-g, --global",
+    "operate on the OMA global install ($OMA_HOME/.agents, default ~/.oma/.agents)",
+  )
+  .addOption(
+    new Option(
+      "--oma-home <path>",
+      "Global storage root for OS executors",
+    ).hideHelp(),
+  )
+  .addOption(
+    new Option(
+      "--oma-state-home <path>",
+      "Explicit profile root for OS executors",
+    ).hideHelp(),
+  )
+  .showSuggestionAfterError()
+  .showHelpAfterError()
+  .addHelpText(
+    "after",
+    "\nAliases:\n  oma  Alias for oh-my-agent after global installation.\n",
+  );
+
+program.hook("preAction", () => {
+  const opts = program.opts<{
+    global?: boolean;
+    omaHome?: string;
+    omaStateHome?: string;
+  }>();
+  if (opts.omaHome !== undefined) process.env.OMA_HOME = opts.omaHome;
+  if (opts.omaStateHome !== undefined)
+    process.env.OMA_STATE_HOME = opts.omaStateHome;
+  const ctx = resolveInstallContext({ global: opts.global === true });
+  setInstallContext(ctx);
+});
+
+/**
+ * Register the full command tree. Every command module is imported lazily so
+ * the `oma hook run` fast path below never pays their module-evaluation cost.
+ * `Promise.all` order determines `--help` listing order.
+ */
+async function registerFullCli(): Promise<void> {
+  const { printDescribe, runAction } = await import("./utils/cli-framework.js");
+  const { registerDefaultInstallAction, registerInstall } = await import(
+    "./commands/install/command.js"
+  );
+
+  registerDefaultInstallAction(program);
+  registerInstall(program);
+
+  program
+    .command("describe [command-path]")
+    .description("Describe CLI commands as JSON for runtime introspection")
+    .action(
+      runAction(
+        (commandPath) => {
+          printDescribe(
+            commandSurface?.help ?? program,
+            commandSurface?.describePath(commandPath) ?? commandPath,
+          );
+        },
+        { supportsJsonOutput: true },
+      ),
+    );
+
+  program
+    .command("dashboard")
+    .description("Start terminal dashboard (real-time agent monitoring)")
+    .option(
+      "--root <path>",
+      "Project whose memories to watch (default: current directory)",
+    )
+    .action(
+      runAction(async (options: { root?: string }) => {
+        const { startTerminalDashboard } = await import(
+          "./terminal-dashboard.js"
+        );
+        await startTerminalDashboard({ projectDir: options.root });
+      }),
+    );
+
+  program
+    .command("dashboard:web")
+    .description("Start web dashboard on http://127.0.0.1:9847")
+    .option(
+      "--root <path>",
+      "Project whose memories to watch (default: current directory)",
+    )
+    .action(
+      runAction(async (options: { root?: string }) => {
+        const { startDashboard } = await import("./dashboard.js");
+        const dashboard = startDashboard({ projectDir: options.root });
+        dashboard.ready.catch((err: unknown) => {
+          console.error(
+            `Dashboard failed to start: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          process.exitCode = 1;
+        });
+      }),
+    );
+
+  const registrars = await Promise.all([
+    import("./commands/auth-status/command.js").then(
+      (m) => m.registerAuthStatus,
+    ),
+    import("./commands/uninstall/command.js").then((m) => m.registerUninstall),
+    import("./commands/update/command.js").then((m) => m.registerUpdate),
+    import("./commands/link/command.js").then((m) => m.registerLink),
+    import("./commands/intel/command.js").then((m) => m.registerIntelCommand),
+    import("./commands/market/index.js").then((m) => m.registerMarketCommand),
+    import("./commands/doctor/command.js").then((m) => m.registerDoctor),
+    import("./commands/hook/command.js").then((m) => m.registerHook),
+    import("./commands/state/emit.js").then((m) => m.registerEmit),
+    import("./commands/state/command.js").then((m) => m.registerState),
+    import("./commands/profile/command.js").then((m) => m.registerProfile),
+    import("./commands/home/command.js").then((m) => m.registerHome),
+    import("./commands/ralph/command.js").then((m) => m.registerRalph),
+    import("./commands/goal/command.js").then((m) => m.registerGoal),
+    import("./commands/stats/command.js").then((m) => m.registerStats),
+    import("./commands/retro/command.js").then((m) => m.registerRetro),
+    import("./commands/recap/command.js").then((m) => m.registerRecap),
+    import("./commands/docs/command.js").then((m) => m.registerDocsCommands),
+    import("./commands/emit/command.js").then((m) => m.registerEmitCommand),
+    import("./commands/cleanup/command.js").then((m) => m.registerCleanup),
+    import("./commands/bridge/command.js").then((m) => m.registerBridge),
+    import("./commands/agent/command.js").then((m) => m.registerAgentCommands),
+    import("./commands/model/command.js").then((m) => m.registerModelCommands),
+    import("./commands/memory/command.js").then((m) => m.registerMemory),
+    import("./commands/verify/command.js").then((m) => m.registerVerify),
+    import("./commands/vault/command.js").then((m) => m.registerVault),
+    import("./commands/star/command.js").then((m) => m.registerStar),
+    import("./commands/visualize/command.js").then((m) => m.registerVisualize),
+    import("./commands/search/index.js").then((m) => m.registerSearchCommand),
+    import("./commands/skills/command.js").then((m) => m.registerSkillsCommand),
+    import("./commands/harness/command.js").then(
+      (m) => m.registerHarnessCommand,
+    ),
+    import("./commands/slide/index.js").then((m) => m.registerSlideCommand),
+    import("./commands/scholar/index.js").then((m) => m.registerScholarCommand),
+    import("./commands/image/index.js").then((m) => m.registerImageCommand),
+    import("./commands/video/index.js").then((m) => m.registerVideoCommand),
+    import("./commands/serena/command.js").then(
+      (m) => m.registerSerenaCommands,
+    ),
+    import("./commands/schedule/command.js").then((m) => m.registerSchedule),
+    import("./commands/explain/command.js").then(
+      (m) => m.registerExplainCommand,
+    ),
+    import("./commands/diagram/command.js").then(
+      (m) => m.registerDiagramCommand,
+    ),
+  ]);
+  for (const register of registrars) {
+    register(program);
+  }
+
+  program
+    .command("help")
+    .description("Show help information")
+    .action(
+      runAction(() => {
+        program.help();
+      }),
+    );
+
+  program
+    .command("version")
+    .description("Show version number")
+    .action(
+      runAction(() => {
+        console.log(VERSION);
+      }),
+    );
+}
+
+// Fast path: `oma hook …` runs on every user prompt via the vendor hook
+// wrappers (oma-hook.sh), so it must not pay the full command tree's
+// module-evaluation cost (~0.4s). Register only the hook slice; any other
+// argv shape (including `oma -g hook`) falls through to the full CLI.
+// `oma bridge` gets the same treatment for memory rather than latency: it is a
+// long-lived stdio proxy that every MCP client session keeps (codex keeps
+// several), so the full tree would stay resident in each one all session.
+if (process.argv[2] === "hook" && process.argv[3] !== "probe") {
+  const { registerHook } = await import("./commands/hook/command.js");
+  registerHook(program);
+} else if (process.argv[2] === "bridge") {
+  const { registerBridge } = await import("./commands/bridge/command.js");
+  registerBridge(program);
+} else {
+  await registerFullCli();
+}
+
+const { createCommandSurface } = await import("./utils/command-surface.js");
+commandSurface = createCommandSurface(program);
+try {
+  const argv = process.argv.slice(2);
+  if (!commandSurface.showHelp(argv))
+    await program.parseAsync(commandSurface.normalize(argv), { from: "user" });
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}

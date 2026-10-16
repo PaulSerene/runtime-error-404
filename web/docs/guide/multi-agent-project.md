@@ -1,0 +1,389 @@
+---
+title: "Guide: Multi-Agent Projects"
+sidebar_label: Multi-Agent Projects
+description: Complete guide for coordinating multiple domain agents across frontend, backend, database, mobile, and QA, from planning through merge.
+---
+
+# Guide: Multi-Agent Projects
+
+## When to use multi-agent coordination
+
+Your feature spans multiple domains: backend API + frontend UI + database schema + mobile client + QA review. A single agent cannot handle the full scope, and you need the domains to progress in parallel without stepping on each other's files.
+
+Multi-agent coordination is the right choice when:
+
+- The task involves 2 or more domains (frontend, backend, mobile, db, QA, debug, pm).
+- There are API contracts between domains (e.g., a REST endpoint consumed by both web and mobile).
+- You want parallel execution to reduce wall-clock time.
+- You need QA review after implementation across all domains.
+
+If your task fits entirely within one domain, use the specific agent directly instead.
+
+---
+
+## The full sequence: /plan to /review
+
+The recommended multi-agent workflow follows a strict four-step pipeline.
+
+```mermaid
+flowchart LR
+  plan["/plan"] --> planFile["plan-{sessionId}.json"]
+  planFile -->|"loaded by"| orch["/orchestrate (automated)"]
+  plan -.->|"or run"| work["/work (step-by-step; its PM step writes the plan)"]
+  work --> spawn["Agents per priority tier (native subagents or oma agent spawn)"]
+  orch --> spawn
+  spawn --> review["/review (QA)"]
+```
+
+### Step 1: /plan for requirements and task decomposition
+
+The `/plan` workflow runs inline (no subagent spawning) and produces a structured plan.
+
+```text
+/plan
+```
+
+What happens:
+
+1. **Gather requirements**: The PM agent asks about target users, core features, constraints, and deployment targets.
+2. **Analyze technical feasibility**: Uses the configured code-intelligence provider to scan the existing codebase for reusable code and architecture patterns. Native search is only for paths outside the project or ignored paths.
+3. **Define API contracts**: Designs endpoint contracts (method, path, request/response schemas, auth, error responses) and saves them to `.agents/results/api-contracts/` (run artifacts), promoting durable specs to `docs/plans/contracts/` when committed.
+4. **Decompose into tasks**: Breaks the project into actionable tasks, each with assigned agent, title, acceptance criteria, priority tier (1 runs first), and dependencies.
+5. **Review plan with user**: Presents the full plan for confirmation. The workflow will not proceed without explicit user approval.
+6. **Save plan**: Writes the approved plan to `.agents/results/plan-{sessionId}.json` and records a summary in memory.
+
+The output `.agents/results/plan-{sessionId}.json` is the input for both `/work` and `/orchestrate`.
+
+### Step 2: /work or /orchestrate for execution
+
+You have two execution paths:
+
+| Aspect | /work | /orchestrate |
+|:-------|:-----------|:-------------|
+| **Interaction** | Interactive (user confirms at each stage) | Automated (runs to completion) |
+| **PM planning** | Built-in (Step 2 runs PM agent) | Loads a plan when present; creates one inline when absent |
+| **User checkpoint** | After plan review (Step 3) | The inline plan still passes its review gate before fan-out |
+| **Persistent mode** | Yes (cannot be terminated until complete) | Yes (cannot be terminated until complete) |
+| **Best for** | First-time use, complex projects needing oversight | Repeat runs, well-defined tasks |
+
+#### /work: interactive multi-agent pipeline
+
+```text
+/work
+```
+
+1. Analyzes the user's request and identifies involved domains.
+2. Runs the PM agent for task decomposition (creates `plan-{sessionId}.json`).
+3. Presents plan for user confirmation. **Blocks until confirmed.**
+4. Spawns agents by priority tier (tier 1 first, then tier 2, and so on), with each same-tier task running in parallel.
+5. Monitors agent progress via memory files.
+6. Runs QA agent review on all deliverables (OWASP Top 10, performance, accessibility, code quality).
+7. If QA finds CRITICAL or HIGH issues, re-spawns the responsible agent with QA findings. Repeats up to 2 times per issue. If the same issue persists, activates the **Exploration Loop**: generates 2-3 alternative approaches, spawns the same agent type with different hypothesis prompts in separate workspaces, QA scores each, and the best result is adopted.
+
+#### /orchestrate: automated parallel execution
+
+```text
+/orchestrate
+```
+
+1. Loads `.agents/results/plan-{sessionId}.json`, creating a plan inline through `/plan` when no usable plan exists.
+2. Initializes a session with ID format `session-YYYYMMDD-HHMMSS`.
+3. Creates `orchestrator-session-{sessionId}.md` and `task-board-{sessionId}.md` in the memory directory.
+4. Spawns agents per priority tier, each getting: task description, API contracts, and context.
+5. Monitors progress by polling `progress-{agentId}-{taskId}-{runId}-{sessionId}.md` files.
+6. Verifies each completed agent via `verify.sh`. PASS (exit 0) accepts; FAIL (exit 1) re-spawns with error context (max 2 retries); persistent failure triggers the Exploration Loop.
+7. Collects all `result-{agentId}-{taskId}-{runId}-{sessionId}.md` files and compiles a final report.
+
+### Step 3: agent spawn for CLI-Level agent management
+
+The `agent spawn` command is the low-level mechanism that workflows call internally. You can also use it directly:
+
+```bash
+oma agent spawn backend "Implement user auth API with JWT" session-20260324-143000 -w ./api
+```
+
+**All flags** (`oma agent spawn --help`):
+
+| Flag | Description |
+|:-----|:-----------|
+| `--vendor <vendor>` | CLI vendor override (antigravity/claude/codex/cursor/opencode/qwen/grok/pi). Overrides model resolution for this spawn. |
+| `-w, --workspace <path>` | Working directory for the agent. Auto-detected from monorepo config if omitted. |
+| `--task-id <id>` | Binds the spawn to a task in the session plan; defaults to the agent ID. |
+| `--isolation worktree` | Creates a git worktree for the spawn; the default is no extra isolation. |
+| `--read-only` | Restricts the child to inspection tools and suppresses auto-approve flags. |
+| `--resumed-from <run-id>` | Links a retry to its preceding run. |
+| `--fallback-vendors <vendors>` | Ordered, comma-separated fallback vendor chain for this spawn. |
+
+**Vendor resolution order** (first match wins):
+
+1. `--vendor` flag on the command line
+2. `agents:` override in `oma-config.yaml` for this agent
+3. Active `model_preset` agent defaults
+
+See [Per-Agent Models](./per-agent-models.md) for configuration details.
+
+**Workspace auto-detection** checks monorepo configs in this order: pnpm-workspace.yaml, package.json workspaces, lerna.json, nx.json, turbo.json, mise.toml. Each workspace directory is scored against agent type keywords (e.g., "web", "frontend", "client" for the frontend agent). If no monorepo config is found, it falls back to hardcoded candidates like `apps/web`, `apps/frontend`, `frontend/`, etc.
+
+**Prompt resolution:** The `<prompt>` argument can be either inline text or a file path. If the path resolves to an existing file, its contents are read and used as the prompt. The CLI also injects vendor-specific execution protocols from `.agents/skills/_shared/runtime/execution-protocols/{vendor}.md`.
+
+### Step 4: /review for QA verification
+
+```text
+/review
+```
+
+The review workflow runs a full QA pipeline:
+
+1. **Identify scope**: Asks what to review (specific files, feature branch, or entire project).
+2. **Automated security checks**: Runs `npm audit`, `bandit`, or equivalent.
+3. **OWASP Top 10 manual review**: Injection, broken auth, sensitive data, access control, misconfig, insecure deserialization, vulnerable components, insufficient logging.
+4. **Performance analysis**: N+1 queries, missing indexes, unbounded pagination, memory leaks, unnecessary re-renders, bundle sizes.
+5. **Accessibility**: WCAG 2.2 AA, including semantic HTML, ARIA, keyboard nav, color contrast, focus management.
+6. **Code quality**: Naming, error handling, test coverage, TypeScript strict mode, unused imports, async/await patterns.
+7. **Report**: Findings categorized as CRITICAL / HIGH / MEDIUM / LOW with `file:line`, description, and remediation code.
+
+For large scopes, the workflow delegates to the QA agent subagent. With the `--fix` option, it enters a Fix-Verify Loop: spawn domain agents to fix CRITICAL/HIGH issues, re-review, repeat up to 3 times.
+
+---
+
+## Session ID strategy
+
+Every orchestration session gets a unique identifier in the format:
+
+```text
+session-YYYYMMDD-HHMMSS
+```
+
+Example: `session-20260324-143052`
+
+The session ID is used to:
+
+- Name memory files (`orchestrator-session-{sessionId}.md`, `task-board-{sessionId}.md`)
+- Track agent processes via PID files in the OS temp directory (`$TMPDIR` on macOS, usually `/tmp` on Linux, `%TEMP%` on Windows): `subagent-{session-id}-{agent-id}.pid`
+- Correlate log files in the same directory: `subagent-{session-id}-{agent-id}.log`
+- Group results in `.agents/results/parallel-{timestamp}/`
+
+The session ID is generated at Step 2 of `/orchestrate` and passed to all spawned agents. This ensures all agents, logs, and PID files for a single run can be traced back to one session.
+
+---
+
+## Workspace assignment per domain
+
+Each agent is spawned in an isolated workspace directory to prevent file conflicts. The assignment follows these rules:
+
+### Automatic detection
+
+When `-w` is omitted (or set to `.`), the CLI detects the best workspace by:
+
+1. Scanning monorepo config files (pnpm-workspace.yaml, package.json, lerna.json, nx.json, turbo.json, mise.toml).
+2. Expanding glob patterns (e.g., `apps/*`) into actual directories.
+3. Scoring each directory against agent-type keywords:
+
+| Agent Type | Keywords (in priority order) |
+|:-----------|:---------------------------|
+| frontend | web, frontend, client, ui, app, dashboard, admin, portal |
+| backend | api, backend, server, service, gateway, core |
+| mobile | mobile, ios, android, native, rn, expo |
+
+4. Exact directory name match scores 100, contains-keyword scores 50, path-contains scores 25.
+5. Highest-scoring directory wins.
+
+### Fallback candidates
+
+If no monorepo config exists, the CLI checks hardcoded paths in order:
+
+- **frontend:** `apps/web`, `apps/frontend`, `apps/client`, `packages/web`, `packages/frontend`, `frontend`, `web`, `client`
+- **backend:** `apps/api`, `apps/backend`, `apps/server`, `packages/api`, `packages/backend`, `backend`, `api`, `server`
+- **mobile:** `apps/mobile`, `apps/app`, `packages/mobile`, `mobile`, `app`
+
+If nothing matches, the agent runs in the current directory (`.`).
+
+### Explicit override
+
+Always available:
+
+```bash
+oma agent spawn frontend "Build landing page" session-id -w ./packages/web-app
+```
+
+---
+
+## Contract-first rule
+
+API contracts are the synchronization mechanism between agents. The contract-first rule means:
+
+1. **Contracts are defined before implementation begins.** The `/plan` workflow's Step 3 produces API contracts that are saved to `.agents/results/api-contracts/` (or `docs/plans/contracts/` for durable specs).
+
+2. **Every agent receives its relevant contracts as context.** When `/orchestrate` spawns agents in Step 3, each agent gets "task description, API contracts, relevant context."
+
+3. **Contracts define the interface boundary.** A contract specifies:
+   - HTTP method and path
+   - Request body schema (with types)
+   - Response body schema (with types)
+   - Authentication requirements
+   - Error response formats
+
+4. **Contract violations are caught during monitoring.** Step 5 of `/work` uses the configured code-intelligence provider to verify API contract alignment between agents. Native search is only for paths outside the project or ignored paths.
+
+5. **QA review checks contract adherence.** The QA agent's Alignment Review (Step 6 in ultrawork) explicitly compares implementation against the plan, including API contracts.
+
+Without contracts, a backend agent might return `{ "user_id": 1 }` while the frontend agent consumes `{ "userId": 1 }`. The contract-first rule prevents this kind of integration bug.
+
+---
+
+## Merge gates: 4 conditions
+
+Before any multi-agent work is considered complete, four conditions must be met:
+
+### 1. Declared checks succeed
+
+Every acceptance criterion has a relevant check, and the checks declared by the plan pass. A build is included only when the task's project gate requires it; the result contract records the actual argv and exit code.
+
+### 2. Tests pass
+
+All existing tests continue to pass, and new tests cover the implemented functionality. The QA agent reviews test coverage as part of its Code Quality Review.
+
+### 3. Only planned files modified
+
+Agents must not modify files outside their assigned scope. The verification step checks that only files related to the agent's task have been changed. This prevents agents from making unintended side effects in shared code.
+
+### 4. QA review clear
+
+No CRITICAL or HIGH findings remain from the QA agent's review. MEDIUM and LOW findings can be documented for future sprints, but blockers must be resolved.
+
+In the ultrawork workflow, these translate into explicit **phase gates** (PLAN_GATE, IMPL_GATE, VERIFY_GATE, REFINE_GATE, SHIP_GATE) with checkbox-style criteria that must all pass before proceeding.
+
+---
+
+## Spawn examples
+
+### Single agent spawn
+
+```bash
+# Spawn backend agent; the vendor comes from the resolution order above
+oma agent spawn backend "Implement /api/users CRUD endpoint per API contract" session-20260324-143000
+
+# Spawn frontend agent with Claude, explicit workspace
+oma agent spawn frontend "Build user dashboard with React" session-20260324-143000 --vendor claude -w ./apps/web
+
+# Spawn from a prompt file
+oma agent spawn backend ./prompts/auth-api.md session-20260324-143000 -w ./api
+```
+
+### Parallel execution via agent parallel
+
+Using a YAML tasks file:
+
+```yaml
+# tasks.yaml
+tasks:
+  - agent: backend
+    task: "Implement user authentication API with JWT tokens"
+    workspace: ./api
+  - agent: frontend
+    task: "Build login page and auth flow UI"
+    workspace: ./web
+  - agent: mobile
+    task: "Implement mobile auth screens with biometric support"
+    workspace: ./mobile
+```
+
+```bash
+oma agent parallel tasks.yaml
+```
+
+Using inline mode:
+
+```bash
+oma agent parallel --inline \
+  "backend:Implement user auth API:./api" \
+  "frontend:Build login page:./web" \
+  "mobile:Implement auth screens:./mobile"
+```
+
+Background mode (no wait):
+
+```bash
+oma agent parallel tasks.yaml --no-wait
+# Returns immediately, results written to .agents/results/parallel-{timestamp}/
+```
+
+With vendor override:
+
+```bash
+oma agent parallel tasks.yaml --vendor claude
+```
+
+---
+
+## Anti-patterns to avoid
+
+### 1. Rubber-stamping the plan
+
+`/orchestrate` can create a plan through `/plan` inline when no usable plan file exists. The inline plan still goes through `/plan`'s review gate, and the fan-out in the next step follows that approved decomposition. For large multi-domain work, run `/plan` up front so you have a durable tracker in `docs/plans/work/` and room to refine the decomposition before any agent spawns.
+
+### 2. Overlapping workspaces
+
+Assigning two agents to the same workspace directory. This causes file conflicts where one agent's changes overwrite another's. Always use separate workspace directories.
+
+### 3. Missing API contracts
+
+Spawning backend and frontend agents without defining contracts first. They will make incompatible assumptions about data formats, field names, and error handling.
+
+### 4. Ignoring QA findings
+
+Treating QA review as optional. CRITICAL and HIGH findings represent real bugs that will surface in production. The workflow enforces this by looping until no blockers remain.
+
+### 5. Manual file coordination
+
+Trying to manually merge agent outputs instead of letting the verification and QA pipeline handle integration. The automated pipeline catches issues that manual review misses.
+
+### 6. Over-parallelization
+
+Running tier 2 tasks before tier 1 tasks complete. Priority tiers exist because later-tier tasks often depend on earlier-tier outputs. The workflows enforce tier ordering automatically.
+
+### 7. Skipping verification
+
+Using `agent spawn` directly without recording the result contract afterward. Run the task's pinned checks and finish a structured claim; see [Agent results and resume](./agent-results-and-resume.md). The workflow's verification step then catches failed checks and scope drift before results are reused.
+
+---
+
+## Cross-domain integration validation
+
+After all agents complete their individual tasks, cross-domain integration must be validated:
+
+1. **API contract alignment**: The configured code-intelligence provider verifies that backend implementations match the contracts consumed by frontend and mobile. Native search is only for paths outside the project or ignored paths.
+
+2. **Type consistency**: TypeScript types, Python dataclasses, or Dart models shared across domains must use consistent field names and types.
+
+3. **Authentication flow**: If the backend implements JWT auth, the frontend must correctly send tokens in headers, and the mobile app must store and refresh them appropriately.
+
+4. **Error handling**: All consumers of an API must handle the documented error responses. If the backend returns `{ "error": "unauthorized", "code": 401 }`, all clients must handle this format.
+
+5. **Database schema alignment**: If the database agent creates migrations, the backend ORM models must match the schema exactly.
+
+The QA agent's Alignment Review (Step 6 in ultrawork, Step 6 in work) performs this cross-domain validation systematically.
+
+---
+
+## When it's done
+
+A multi-agent project is complete when:
+
+- All agents in all priority tiers have completed successfully.
+- Verification scripts pass for every agent (exit code 0).
+- QA review reports zero CRITICAL and zero HIGH findings.
+- Cross-domain API contract alignment is confirmed.
+- Build succeeds and all tests pass.
+- The final report is written to memory and presented to the user.
+- User gives final approval (in `/work` and ultrawork's SHIP_GATE).
+
+---
+
+## Next steps
+
+- Watch the run: [Dashboard Monitoring](./dashboard-monitoring.md)
+- Audit or resume results: [Results and Resume](./agent-results-and-resume.md)
+- Something failed: [Troubleshooting](./troubleshooting.md)
+- Pin vendors and models per agent: [Per-Agent Models](./per-agent-models.md)
+- Terms such as [plan](../getting-started/glossary.md#plan) and [persistent workflow](../getting-started/glossary.md#persistent-workflow): [Glossary](../getting-started/glossary.md)

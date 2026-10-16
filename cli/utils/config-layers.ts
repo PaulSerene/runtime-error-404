@@ -1,0 +1,302 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { parseDocument } from "yaml";
+import type { OmaConfig } from "../platform/agent-config/types.js";
+import { evaluateCueFile } from "./cue.js";
+import { omaPaths } from "./oma-home.js";
+import { isRecord } from "./type-guards.js";
+
+export const LOCAL_CONFIG_NAMES = [
+  "oma-config.local.cue",
+  "oma-config.local.yaml",
+] as const;
+
+export class ConfigLayerError extends Error {
+  constructor(
+    message: string,
+    readonly local = false,
+  ) {
+    super(message);
+    this.name = "ConfigLayerError";
+  }
+}
+
+export interface ConfigLayers {
+  config: Partial<OmaConfig>;
+  sources: {
+    global?: string;
+    globalLocal?: string;
+    shared?: string;
+    local?: string;
+    environment?: string;
+  };
+}
+
+function readConfig(file: string, local: boolean): Record<string, unknown> {
+  let value: unknown;
+  if (file.endsWith(".cue")) {
+    const result = evaluateCueFile(file);
+    if (!result.success) {
+      throw new ConfigLayerError(
+        `Failed to evaluate CUE at ${file}: ${local ? "invalid local CUE" : (result.error ?? "unknown error")}.${result.missingCli ? " Install CUE or use oma-config.yaml (oma-config.local.yaml for local settings)." : ""}`,
+        local,
+      );
+    }
+    value = result.data;
+  } else {
+    let content: string;
+    try {
+      content = readFileSync(file, "utf8");
+    } catch {
+      throw new ConfigLayerError(`Cannot read config at ${file}`, local);
+    }
+    const doc = parseDocument(content, { prettyErrors: false });
+    const error = doc.errors[0];
+    if (error) {
+      const prefix = content.slice(0, error.pos[0]);
+      const line = prefix.split("\n").length;
+      const col = prefix.length - prefix.lastIndexOf("\n");
+      // Never include the YAML source excerpt (it may contain credentials).
+      throw new ConfigLayerError(
+        `Failed to parse YAML at ${file}:${line}:${col}: ${error.code}`,
+        local,
+      );
+    }
+    try {
+      value = doc.toJS({ maxAliasCount: 100 });
+    } catch {
+      throw new ConfigLayerError(
+        `Cannot resolve YAML aliases at ${file}`,
+        local,
+      );
+    }
+  }
+  if (isRecord(value)) return value;
+  if (local)
+    throw new ConfigLayerError(
+      `Local config at ${file} must be an object`,
+      true,
+    );
+  return {};
+}
+
+/** Plain objects merge recursively; arrays/scalars replace. Block prototype keys. */
+function overlay(
+  base: Record<string, unknown>,
+  local: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const source of [base, local]) {
+    for (const [key, value] of Object.entries(source)) {
+      if (["__proto__", "constructor", "prototype"].includes(key)) continue;
+      result[key] = isRecord(value)
+        ? overlay(isRecord(result[key]) ? result[key] : {}, value)
+        : value;
+    }
+  }
+  return result;
+}
+
+function readDirectoryLayers(
+  root: string,
+  env: NodeJS.ProcessEnv,
+): { config: Record<string, unknown>; sources: ConfigLayers["sources"] } {
+  const cue = join(root, "oma-config.cue");
+  const yaml = join(root, "oma-config.yaml");
+  const locals = LOCAL_CONFIG_NAMES.map((name) => join(root, name)).filter(
+    (file) => existsSync(file),
+  );
+  if (locals.length > 1) {
+    throw new ConfigLayerError(
+      `Both local CUE and YAML configs exist in ${root}; keep only one local config.`,
+      true,
+    );
+  }
+  const sources: ConfigLayers["sources"] = {};
+  let shared: Record<string, unknown> = {};
+  const strict = locals.length > 0 || env.OMA_MODEL_PRESET === "free";
+  if (existsSync(cue)) {
+    try {
+      const cueConfig = readConfig(cue, strict);
+      let yamlDefaults: Record<string, unknown> = {};
+      if (existsSync(yaml)) {
+        try {
+          yamlDefaults = readConfig(yaml, strict);
+        } catch {
+          // A valid CUE config remains authoritative over a stale YAML file.
+        }
+      }
+      // Installer preferences written only to YAML remain defaults for CUE.
+      shared = overlay(yamlDefaults, cueConfig);
+      sources.shared = cue;
+    } catch (error) {
+      if (!existsSync(yaml)) throw error;
+      console.warn(
+        `[config] CUE evaluation failed at ${cue}. Falling back to oma-config.yaml (${yaml}).`,
+      );
+    }
+  }
+  if (!sources.shared && existsSync(yaml)) {
+    shared = readConfig(yaml, strict);
+    sources.shared = yaml;
+  }
+  const local = locals[0];
+  if (local) sources.local = local;
+  return {
+    config: overlay(shared, local ? readConfig(local, true) : {}),
+    sources,
+  };
+}
+
+/** Global defaults plus one nearest project; ancestor project roots never merge. */
+export function loadConfigLayers(
+  cwd = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+  options: { searchParents?: boolean } = {},
+): ConfigLayers {
+  const finalize = (layers: ConfigLayers): ConfigLayers => {
+    if (env.OMA_MODEL_PRESET !== undefined) {
+      if (!env.OMA_MODEL_PRESET.trim())
+        throw new ConfigLayerError("OMA_MODEL_PRESET must be non-empty", true);
+      layers.config.model_preset = env.OMA_MODEL_PRESET.trim();
+      layers.sources.environment = "OMA_MODEL_PRESET";
+    }
+    return layers;
+  };
+  const globalRoot = resolve(omaPaths(env).definitions);
+  const global = readDirectoryLayers(globalRoot, env);
+  const globalSources: ConfigLayers["sources"] = {
+    ...(global.sources.shared ? { global: global.sources.shared } : {}),
+    ...(global.sources.local ? { globalLocal: global.sources.local } : {}),
+  };
+  const globalOnly = () =>
+    finalize({ config: global.config, sources: globalSources });
+  const legacyGlobalRoot = resolve(join(homedir(), ".agents"));
+  let dir = resolve(cwd);
+  while (true) {
+    const root = join(dir, ".agents");
+    // The retired HOME/.agents install is migration input, not a project layer.
+    if (root === globalRoot || root === legacyGlobalRoot) return globalOnly();
+    if (existsSync(root)) {
+      const project = readDirectoryLayers(root, env);
+      return finalize({
+        config: overlay(global.config, project.config),
+        sources: { ...globalSources, ...project.sources },
+      });
+    }
+    if (options.searchParents === false) return globalOnly();
+    const parent = dirname(dir);
+    if (parent === dir) return globalOnly();
+    dir = parent;
+  }
+}
+
+/**
+ * A preference value addressed by its key path, e.g. `["mcp", "devtools_browsers"]`,
+ * optionally with the value readers fall back to while the key is unset.
+ */
+export type PreferenceEntry =
+  | [keys: string[], value: unknown]
+  | [keys: string[], value: unknown, unset: unknown];
+
+export interface PreferenceWritePlan {
+  /** YAML file to edit: oma-config.yaml, or the local overlay beside oma-config.cue. */
+  path: string;
+  /** True when `path` is the gitignored local overlay. */
+  local: boolean;
+  /** Entries still to write; empty when the effective config already holds them. */
+  entries: PreferenceEntry[];
+  /** User-facing note when the write goes to the local overlay. */
+  notice?: string;
+  /** User-facing warning when the entries could not be saved at all. */
+  warning?: string;
+}
+
+function valueAt(config: unknown, keys: string[]): unknown {
+  let value = config;
+  for (const key of keys) value = isRecord(value) ? value[key] : undefined;
+  return value;
+}
+
+/**
+ * Where a preference saved by the CLI must be written to take effect.
+ *
+ * Without `oma-config.cue`, `oma-config.yaml` is the shared source and is
+ * edited in place, as before. With it, CUE outranks YAML (a YAML write is
+ * silently overridden for any key the CUE file sets) and a CUE-only project
+ * must not gain a second shared config file. Patching CUE as text is not safe
+ * for these nested keys (shorthand vs. struct syntax, schema definitions with
+ * the same field names, defaults, and unification conflicts on a duplicate
+ * field), so the value goes to the gitignored local YAML overlay, which
+ * outranks CUE. Entries the evaluated config already resolves to the chosen
+ * value (or, while unset, falls back to it) are skipped, so an install that
+ * keeps the CUE settings and defaults writes nothing.
+ * An existing `oma-config.local.cue` cannot be patched either and only one
+ * local overlay may exist, so that case is refused with the keys to set.
+ * While CUE cannot be evaluated (no `cue` binary until `oma install` ensures
+ * it) and no oma-config.yaml fallback exists, a new local overlay would turn
+ * the loader's soft failure into a fatal one for every config read (including
+ * the install that is saving the choice), so nothing is written and the plan
+ * carries a warning instead.
+ */
+export function planPreferenceWrite(
+  projectRoot: string,
+  entries: PreferenceEntry[],
+  env: NodeJS.ProcessEnv = process.env,
+): PreferenceWritePlan {
+  const agents = join(projectRoot, ".agents");
+  const cue = join(agents, "oma-config.cue");
+  if (!existsSync(cue))
+    return { path: join(agents, "oma-config.yaml"), local: false, entries };
+  let pending = entries;
+  let evaluated = false;
+  try {
+    const { config, sources } = loadConfigLayers(projectRoot, env, {
+      searchParents: false,
+    });
+    // Only an evaluated CUE layer proves what already takes effect.
+    evaluated = sources.shared === cue || sources.global === cue;
+    if (evaluated)
+      pending = entries.filter((entry) => {
+        const current = valueAt(config, entry[0]);
+        return !isDeepStrictEqual(
+          current === undefined && entry.length > 2 ? entry[2] : current,
+          entry[1],
+        );
+      });
+  } catch {
+    // CUE that cannot be evaluated yet: decided below.
+  }
+  const path = join(agents, LOCAL_CONFIG_NAMES[1]);
+  const keys = pending.map(([key]) => key.join(".")).join(", ");
+  const localCue = join(agents, LOCAL_CONFIG_NAMES[0]);
+  if (pending.length && existsSync(localCue))
+    throw new ConfigLayerError(
+      `${cue} outranks oma-config.yaml and ${localCue} is the local overlay; set ${keys} in ${localCue}.`,
+      true,
+    );
+  if (
+    !evaluated &&
+    pending.length &&
+    !existsSync(path) &&
+    !existsSync(join(agents, "oma-config.yaml"))
+  )
+    return {
+      path,
+      local: true,
+      entries: [],
+      warning: `${cue} cannot be evaluated (is the cue CLI installed?), so ${keys} ${pending.length > 1 ? "were" : "was"} not saved. Install CUE, then choose again.`,
+    };
+  return {
+    path,
+    local: true,
+    entries: pending,
+    ...(pending.length
+      ? {
+          notice: `oma-config.cue outranks oma-config.yaml, so ${keys} ${pending.length > 1 ? "were" : "was"} saved to ${path} (local, gitignored). Move ${pending.length > 1 ? "them" : "it"} into oma-config.cue to share with the team.`,
+        }
+      : {}),
+  };
+}

@@ -1,0 +1,303 @@
+/**
+ * Migration 009: Migrate legacy `uvx --from git+https://github.com/oraios/serena`
+ * Serena MCP entries to the new `serena start-mcp-server` form.
+ *
+ * Background: Serena's official install guide moved from ephemeral git-based
+ * `uvx --from git+...` invocations to a persistent `uv tool install -p 3.13
+ * serena-agent@latest --prerelease=allow` flow. The MCP transport now invokes
+ * the globally-installed `serena` binary directly. Per the upstream client
+ * matrix, each vendor gets its own `--context`:
+ *   - Claude Code → claude-code
+ *   - Codex       → codex
+ *   - Cursor/IDE  → ide
+ *   - Qwen/Gemini → ide (terminal clients)
+ *
+ * Touches:
+ *   - .codex/config.toml      (mcp_servers.serena)
+ *   - .qwen/settings.json     (mcpServers.serena, also bumps context=agent→ide)
+ *   - .agents/mcp.json        (project-local SSOT, mcpServers.serena, context→claude-code)
+ *   - ~/.claude.json          (top-level mcpServers.serena, context→claude-code)
+ *
+ * Idempotent: skips entries already using the new `serena` command with the
+ * vendor-appropriate context.
+ */
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { readJsonForMerge } from "../../utils/merge-read.js";
+import { isRecord } from "../../utils/type-guards.js";
+import {
+  applyClaudeMcp,
+  needsClaudeMcpUpdate,
+} from "../../vendors/claude/mcp.js";
+import {
+  parseCodexConfig,
+  serializeCodexConfig,
+} from "../../vendors/codex/settings.js";
+import {
+  hasSerenaDashboardOpenDisabled,
+  omaSerenaContext,
+  serenaStartMcpArgs,
+  withSerenaDashboardOpenDisabled,
+} from "../../vendors/serena.js";
+import type { Migration } from "./index.js";
+import { allowsVendor, type MigrationContext } from "./vendor-scope.js";
+
+const LEGACY_GIT_FRAGMENT = "git+https://github.com/oraios/serena";
+
+interface SerenaEntry {
+  command?: unknown;
+  args?: unknown;
+  env?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+function isLegacySerenaEntry(entry: unknown): entry is SerenaEntry {
+  if (!isRecord(entry)) return false;
+  if (entry.command !== "uvx") return false;
+  if (!Array.isArray(entry.args)) return false;
+  return entry.args.some(
+    (arg) => typeof arg === "string" && arg.includes(LEGACY_GIT_FRAGMENT),
+  );
+}
+
+/**
+ * True when the entry already uses the new `serena` binary but has a stale
+ * `--context` value (e.g. the old `agent` context for Qwen, or `ide` where
+ * `claude-code` is now recommended).
+ */
+function hasStaleContext(
+  entry: unknown,
+  expectedContext: string | undefined,
+): entry is SerenaEntry {
+  if (!expectedContext) return false;
+  if (!isRecord(entry)) return false;
+  if (entry.command !== "serena") return false;
+  if (!Array.isArray(entry.args)) return false;
+  const idx = entry.args.indexOf("--context");
+  if (idx === -1) return true;
+  return entry.args[idx + 1] !== omaSerenaContext(expectedContext);
+}
+
+/**
+ * Strip the leading `--from git+... serena` arguments from a legacy uvx args
+ * array. The remaining tail (e.g. `start-mcp-server --context codex ...`) is
+ * exactly what the new `serena` binary expects.
+ */
+function tailAfterLegacyPrefix(args: unknown[]): string[] {
+  const stringArgs = args.filter((a): a is string => typeof a === "string");
+  let i = 0;
+  if (stringArgs[i] === "--from") i += 2; // skip --from <url>
+  if (stringArgs[i] === "serena") i += 1;
+  return stringArgs.slice(i);
+}
+
+function migrateEntry(
+  entry: SerenaEntry,
+  contextOverride?: string,
+): SerenaEntry {
+  const args = Array.isArray(entry.args) ? entry.args : [];
+  const tail = tailAfterLegacyPrefix(args);
+  const finalArgs = tail.length > 0 ? tail : ["start-mcp-server"];
+  if (contextOverride) {
+    const idx = finalArgs.indexOf("--context");
+    if (idx !== -1 && idx + 1 < finalArgs.length) {
+      finalArgs[idx + 1] = omaSerenaContext(contextOverride);
+    } else {
+      finalArgs.push("--context", omaSerenaContext(contextOverride));
+    }
+  }
+  return {
+    ...entry,
+    command: "serena",
+    args: withSerenaDashboardOpenDisabled({
+      command: "serena",
+      args: finalArgs,
+    }).args,
+  };
+}
+
+function migrateJsonFile(
+  path: string,
+  parent: "mcpServers" | "mcp_servers",
+  contextOverride?: string,
+): boolean {
+  if (!existsSync(path)) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed)) return false;
+
+  const servers = parsed[parent];
+  if (!isRecord(servers)) return false;
+  const serena = servers.serena;
+  const legacy = isLegacySerenaEntry(serena);
+  const staleCtx = !legacy && hasStaleContext(serena, contextOverride);
+  const staleDashboard =
+    !legacy &&
+    isRecord(serena) &&
+    !hasSerenaDashboardOpenDisabled(serena as SerenaEntry);
+  if (!legacy && !staleCtx && !staleDashboard) return false;
+
+  servers.serena = migrateEntry(serena as SerenaEntry, contextOverride);
+  writeFileSync(path, `${JSON.stringify(parsed, null, 2)}\n`);
+  return true;
+}
+
+function migrateCodexToml(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const raw = readFileSync(path, "utf-8");
+  const parsed = parseCodexConfig(raw);
+  const servers = parsed.mcp_servers;
+  if (!servers) return false;
+  const serena = servers.serena as SerenaEntry | undefined;
+  const legacy = isLegacySerenaEntry(serena);
+  const staleCtx = !legacy && hasStaleContext(serena, "codex");
+  const staleDashboard = !legacy && !hasSerenaDashboardOpenDisabled(serena);
+  if (!legacy && !staleCtx && !staleDashboard) return false;
+
+  const migrated = migrateEntry(serena as SerenaEntry, "codex");
+  parsed.mcp_servers = {
+    ...servers,
+    serena: {
+      command: migrated.command as string,
+      args: migrated.args as string[],
+      ...(migrated.env ? { env: migrated.env as Record<string, string> } : {}),
+    },
+  };
+  writeFileSync(path, `${serializeCodexConfig(parsed)}\n`);
+  return true;
+}
+
+/**
+ * Migrate the legacy `.cursor/mcp.json` symlink (pointing at .agents/mcp.json)
+ * to a regular file with serena `--context=ide`. This breaks the symlink
+ * sharing — Cursor now has its own MCP config so it can use the IDE-optimized
+ * context while .agents/mcp.json (Claude Code's template) uses claude-code.
+ */
+function migrateCursorSymlink(cwd: string): boolean {
+  const cursorMcp = join(cwd, ".cursor", "mcp.json");
+  let isSymlink = false;
+  try {
+    isSymlink = lstatSync(cursorMcp).isSymbolicLink();
+  } catch {
+    return false;
+  }
+  if (!isSymlink) return false;
+
+  const agentsMcp = join(cwd, ".agents", "mcp.json");
+  if (!existsSync(agentsMcp)) return false;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(agentsMcp, "utf-8"));
+  } catch {
+    return false;
+  }
+  if (!isRecord(parsed)) return false;
+
+  const mcpServers = isRecord(parsed.mcpServers)
+    ? (parsed.mcpServers as Record<string, unknown>)
+    : {};
+  const cursorConfig: Record<string, unknown> = {
+    mcpServers: {
+      ...mcpServers,
+      serena: {
+        command: "serena",
+        args: serenaStartMcpArgs("ide"),
+        env: { SERENA_LOG_LEVEL: "info" },
+      },
+    },
+  };
+
+  unlinkSync(cursorMcp);
+  writeFileSync(cursorMcp, `${JSON.stringify(cursorConfig, null, 2)}\n`);
+  return true;
+}
+
+export const migrateSerenaUvTool: Migration = {
+  name: "009-serena-uv-tool",
+  up(cwd: string, ctx?: MigrationContext): string[] {
+    const actions: string[] = [];
+
+    if (
+      allowsVendor(ctx, "codex") &&
+      migrateCodexToml(join(cwd, ".codex", "config.toml"))
+    ) {
+      actions.push(".codex/config.toml (Serena uvx → uv tool install)");
+    }
+
+    if (
+      allowsVendor(ctx, "qwen") &&
+      migrateJsonFile(join(cwd, ".qwen", "settings.json"), "mcpServers", "ide")
+    ) {
+      actions.push(".qwen/settings.json (Serena uvx → uv tool install)");
+    }
+
+    if (
+      migrateJsonFile(
+        join(cwd, ".agents", "mcp.json"),
+        "mcpServers",
+        "claude-code",
+      )
+    ) {
+      actions.push(".agents/mcp.json (Serena uvx → uv tool install)");
+    }
+
+    if (allowsVendor(ctx, "cursor") && migrateCursorSymlink(cwd)) {
+      actions.push(".cursor/mcp.json (symlink → regular file, --context=ide)");
+    }
+
+    // Claude Code project-level MCP config (`.mcp.json` at project root).
+    // Refresh only when the file already exists and is stale (legacy uvx
+    // or wrong --context). We don't auto-create on bare repos — `oma link`
+    // owns the creation path so users opt in explicitly via the claude
+    // vendor. Existing custom servers are preserved because
+    // applyClaudeMcp merges instead of overwriting non-serena
+    // entries.
+    const claudeMcpPath = join(cwd, ".mcp.json");
+    if (allowsVendor(ctx, "claude") && existsSync(claudeMcpPath)) {
+      // Only a file that parses is refreshed; a broken one keeps the user's
+      // servers untouched (`oma link` warns about it).
+      const read = readJsonForMerge(claudeMcpPath);
+      const claudeMcp = read.status === "ok" ? read.value : undefined;
+      const claudeServers = claudeMcp?.mcpServers;
+      if (
+        claudeMcp &&
+        isRecord(claudeServers) &&
+        isRecord(claudeServers.serena) &&
+        needsClaudeMcpUpdate(claudeMcp)
+      ) {
+        writeFileSync(
+          claudeMcpPath,
+          `${JSON.stringify(applyClaudeMcp(claudeMcp), null, 2)}\n`,
+        );
+        actions.push(".mcp.json (Claude Code project MCP refreshed)");
+      }
+    }
+
+    // ~/.claude.json (user-global Claude Code MCP config). Only touched when
+    // it contains the legacy uvx form, to avoid clobbering user customizations.
+    if (
+      allowsVendor(ctx, "claude") &&
+      migrateJsonFile(
+        join(homedir(), ".claude.json"),
+        "mcpServers",
+        "claude-code",
+      )
+    ) {
+      actions.push("~/.claude.json (Serena uvx → uv tool install)");
+    }
+
+    return actions;
+  },
+};

@@ -1,0 +1,302 @@
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { getCoordinationStorePath } from "../io/memory.js";
+import { activateWorkflowSession, emitEvent, readEvents } from "./events.js";
+import { mirrorSessionToSerena } from "./serena-mirror.js";
+import {
+  buildSessionSummary,
+  exportSessionSummary,
+  sessionSummaryName,
+} from "./session-summary.js";
+
+function seedSession(projectDir: string, sid: string): void {
+  activateWorkflowSession({
+    projectDir,
+    workflow: "ultrawork",
+    sid,
+    vendor: "claude-code",
+    vendorSid: "vendor-1",
+  });
+  emitEvent(projectDir, sid, {
+    kind: "decision.made",
+    payload: {
+      subject: "JWT expiry",
+      decision: "24h",
+      rationale: "mobile-first",
+    },
+  });
+  emitEvent(projectDir, sid, {
+    kind: "gate.passed",
+    payload: { gate: "phase-1-design", by: "architecture-reviewer-01" },
+  });
+  emitEvent(projectDir, sid, {
+    kind: "session.ended",
+    payload: { status: "completed" },
+  });
+}
+
+describe("session-summary", () => {
+  let projectDir: string;
+  const sid = "01HXZKTESTSID";
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), "oma-session-summary-"));
+    seedSession(projectDir, sid);
+  });
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  describe("sessionSummaryName", () => {
+    it("builds a sanitized session summary name", () => {
+      expect(sessionSummaryName("ultrawork", sid)).toBe(
+        `session-ultrawork-${sid.toLowerCase()}`,
+      );
+      expect(sessionSummaryName("Deep Sec!", "AB/CD")).toBe(
+        "session-deep-sec-ab-cd",
+      );
+    });
+  });
+
+  describe("buildSessionSummary", () => {
+    it("bounds exported summary text and strips payload controls", () => {
+      const events = Array.from({ length: 100 }, (_, index) => ({
+        eventId: String(index),
+        ts: "2026-10-02T00:00:00Z",
+        sid,
+        kind: "decision.made",
+        writerPid: 1,
+        payload: {
+          subject: "storage",
+          decision: `Retry\n## Forged\u001b[31m${"x".repeat(20_000)}`,
+          rationale: "y".repeat(20_000),
+          instanceId: `instance-${index}`,
+          secret: "do-not-export",
+        },
+      }));
+      const content = buildSessionSummary(
+        sid,
+        {
+          sid,
+          schemaVersion: 1,
+          category: "main",
+          status: "failed",
+          gatesPassedBy: [],
+          pendingPeerReviews: [],
+        },
+        events,
+      );
+      expect(content.length).toBeLessThanOrEqual(24_001);
+      expect(content.includes("\n## Forged")).toBe(false);
+      expect(content.includes("\u001b")).toBe(false);
+      expect(content.includes("do-not-export")).toBe(false);
+      expect(content).toContain("instance-99");
+      expect(content.includes("instance-0]")).toBe(false);
+    });
+
+    it("includes failed gate reasons, blockers, terminal reasons, and decision instance ids", () => {
+      emitEvent(projectDir, sid, {
+        kind: "decision.made",
+        payload: {
+          subject: "recovery",
+          decision: "retry persistence",
+          rationale: "retain session evidence",
+          instanceId: "retry-1",
+        },
+      });
+      emitEvent(projectDir, sid, {
+        kind: "gate.failed",
+        payload: {
+          gate: "budget",
+          summary: "time cap exhausted",
+          reason: "budget_exhausted",
+        },
+      });
+      emitEvent(projectDir, sid, {
+        kind: "blocker.raised",
+        payload: { summary: "missing database fixture", instanceId: "db-1" },
+      });
+      emitEvent(projectDir, sid, {
+        kind: "session.ended",
+        payload: { status: "failed", reason: "budget_exhausted" },
+      });
+      const events = readEvents(projectDir, sid);
+      const content = buildSessionSummary(
+        sid,
+        {
+          sid,
+          schemaVersion: 1,
+          category: "main",
+          status: "failed",
+          gatesPassedBy: [],
+          pendingPeerReviews: [],
+        },
+        events,
+      );
+      for (const text of [
+        "retry-1",
+        "failed",
+        "time cap exhausted",
+        "budget_exhausted",
+        "missing database fixture",
+        "db-1",
+      ])
+        expect(content).toContain(text);
+    });
+
+    it("includes decisions, gates, and recent events", () => {
+      const events = readEvents(projectDir, sid);
+      const content = buildSessionSummary(
+        sid,
+        {
+          sid,
+          schemaVersion: 1,
+          workflow: "ultrawork",
+          category: "main",
+          status: "completed",
+          gatesPassedBy: [],
+          pendingPeerReviews: [],
+        },
+        events,
+      );
+      expect(content).toContain(`# OMA Session Summary: ultrawork ${sid}`);
+      expect(content).toContain("**JWT expiry** → 24h");
+      expect(content).toContain("mobile-first");
+      expect(content).toContain("phase-1-design by architecture-reviewer-01");
+      expect(content).toContain("`session.ended`");
+    });
+  });
+
+  describe("exportSessionSummary", () => {
+    it("writes a direct-fs summary when no external writer is supplied", async () => {
+      const result = await exportSessionSummary({ projectDir, sid });
+      expect(result).toMatchObject({
+        sid,
+        workflow: "ultrawork",
+        method: "direct-fs",
+        written: true,
+      });
+      const expectedPath = join(
+        getCoordinationStorePath(projectDir),
+        `${sessionSummaryName("ultrawork", sid)}.md`,
+      );
+      expect(result.path).toBe(expectedPath);
+      expect(existsSync(expectedPath)).toBe(true);
+      expect(readFileSync(expectedPath, "utf-8")).toContain("**JWT expiry**");
+    });
+
+    it("never writes a summary into Serena's legacy memory store", async () => {
+      const legacyDir = join(projectDir, ".serena", "memories");
+      mkdirSync(legacyDir, { recursive: true });
+
+      const result = await exportSessionSummary({ projectDir, sid });
+
+      expect(result.path).toBe(
+        join(
+          projectDir,
+          ".agents",
+          "state",
+          "memories",
+          `${sessionSummaryName("ultrawork", sid)}.md`,
+        ),
+      );
+      expect(existsSync(result.path)).toBe(true);
+      expect(
+        existsSync(
+          join(legacyDir, `${sessionSummaryName("ultrawork", sid)}.md`),
+        ),
+      ).toBe(false);
+    });
+
+    it("prefers an explicitly supplied external writer when it succeeds", async () => {
+      const calls: Array<{ name: string; content: string }> = [];
+      const result = await exportSessionSummary({
+        projectDir,
+        sid,
+        writer: {
+          write(name, content) {
+            calls.push({ name, content });
+            return true;
+          },
+        },
+      });
+      expect(result.method).toBe("external-writer");
+      expect(result.written).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.name).toBe(sessionSummaryName("ultrawork", sid));
+      // The external writer succeeded, so no direct-fs file is written.
+      expect(existsSync(result.path)).toBe(false);
+    });
+
+    it("falls back to direct-fs when the external writer returns false", async () => {
+      const result = await exportSessionSummary({
+        projectDir,
+        sid,
+        writer: {
+          write() {
+            return false;
+          },
+        },
+      });
+      expect(result.method).toBe("direct-fs");
+      expect(result.written).toBe(true);
+      expect(existsSync(result.path)).toBe(true);
+    });
+
+    it("falls back to direct-fs when the external writer throws", async () => {
+      const result = await exportSessionSummary({
+        projectDir,
+        sid,
+        writer: {
+          write() {
+            throw new Error("mcp unavailable");
+          },
+        },
+      });
+      expect(result.method).toBe("direct-fs");
+      expect(result.written).toBe(true);
+    });
+
+    it("emits a warning event and never throws when both paths fail", async () => {
+      // Make the canonical coordination store read-only so the write fails.
+      const memoriesDir = join(projectDir, ".agents", "state", "memories");
+      mkdirSync(memoriesDir, { recursive: true });
+      chmodSync(memoriesDir, 0o400);
+
+      let result: Awaited<ReturnType<typeof exportSessionSummary>>;
+      try {
+        result = await exportSessionSummary({ projectDir, sid });
+      } finally {
+        chmodSync(memoriesDir, 0o700);
+      }
+
+      expect(result.written).toBe(false);
+      expect(result.method).toBe("none");
+      expect(result.warning).toBeTruthy();
+
+      const warnings = readEvents(projectDir, sid).filter(
+        (event) => event.kind === "mirror.warning",
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]?.payload?.summaryName).toBe(
+        sessionSummaryName("ultrawork", sid),
+      );
+    });
+  });
+
+  it("keeps the deprecated Serena facade compatible", async () => {
+    const result = await mirrorSessionToSerena({ projectDir, sid });
+    expect(result.memoryName).toBe(sessionSummaryName("ultrawork", sid));
+    expect(result.method).toBe("direct-fs");
+  });
+});

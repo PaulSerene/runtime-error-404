@@ -1,0 +1,99 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import {
+  ALL_CLI_VENDORS,
+  CLI_SKILLS_DIR,
+  vendorRequiresHomeConsent,
+} from "../../platform/skills-installer.js";
+import type { CliTool, CliVendor } from "../../types/index.js";
+import { loadOmaConfig } from "../../utils/config.js";
+import type { UpdateOptions } from "./types.js";
+
+const VENDOR_ROOTS: Record<CliVendor, string[]> = {
+  // agy's project marker is the workspace hooks file written by
+  // installAntigravityHud. The legacy `.gemini/antigravity-cli` dir (dead
+  // pre-homeOnly project installs, swept by link) is kept for one transition
+  // so existing installs are still detected and get the sweep + rewrite.
+  antigravity: [".agents/hooks.json", ".gemini/antigravity-cli"],
+  claude: [".claude"],
+  codex: [".codex"],
+  commandcode: [".commandcode"],
+  copilot: [".github"],
+  cursor: [".cursor"],
+  grok: [".grok"],
+  hermes: [".hermes"],
+  // Kimi is global-only (~/.kimi-code, KIMI_CODE_HOME) — it has no project
+  // marker. Its HOME hooks are (re)written by `oma link` under recorded consent
+  // (installKimiHooks), not the project-root update sweep.
+  kimi: [],
+  kiro: [".kiro"],
+  opencode: [".opencode"],
+  pi: [".pi"],
+  qwen: [".qwen"],
+  zcode: [".zcode"],
+};
+
+// ALL_CLI_VENDORS now enumerates every CliVendor arm, extension vendors
+// included; this used to union EXTENSION_VENDORS back in to work around their
+// omission there.
+const UPDATE_VENDORS = [...ALL_CLI_VENDORS];
+
+function isCliTool(vendor: CliVendor): vendor is CliTool {
+  return vendor in CLI_SKILLS_DIR;
+}
+
+function parseVendorList(raw: string): CliVendor[] {
+  const validVendors = new Set<string>(UPDATE_VENDORS);
+  const vendors = raw
+    .split(",")
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean);
+  const invalid = vendors.filter((v) => !validVendors.has(v));
+
+  if (invalid.length > 0) {
+    throw new Error(
+      `Unsupported vendor(s): ${invalid.join(", ")}. Supported vendors: ${UPDATE_VENDORS.join(", ")}`,
+    );
+  }
+
+  return [...new Set(vendors)] as CliVendor[];
+}
+
+function hasExistingVendorRoot(cwd: string, vendor: CliVendor): boolean {
+  const roots = [...VENDOR_ROOTS[vendor]];
+  if (isCliTool(vendor)) roots.push(CLI_SKILLS_DIR[vendor].projectPath);
+  return roots.some((rel) => existsSync(join(cwd, rel)));
+}
+
+function supportedProjectVendors(): CliVendor[] {
+  return UPDATE_VENDORS.filter((vendor) => {
+    if (!isCliTool(vendor)) return true;
+    return !vendorRequiresHomeConsent(vendor);
+  });
+}
+
+export function resolveUpdateVendors(
+  cwd: string,
+  options: Pick<UpdateOptions, "all" | "vendor"> = {},
+): CliVendor[] {
+  if (options.vendor) return parseVendorList(options.vendor);
+  if (options.all) return supportedProjectVendors();
+
+  // An explicit selection is authoritative, including an empty list and
+  // HOME-only vendors. Leftover project directories must not expand it.
+  const configured: unknown = loadOmaConfig(cwd)?.vendors;
+  if (Array.isArray(configured)) {
+    return UPDATE_VENDORS.filter((vendor) => configured.includes(vendor));
+  }
+
+  // Legacy installs without a selection fall back to project markers.
+  return UPDATE_VENDORS.filter(
+    (vendor) =>
+      (!isCliTool(vendor) || !vendorRequiresHomeConsent(vendor)) &&
+      hasExistingVendorRoot(cwd, vendor),
+  );
+}
+
+export function toCliTools(vendors: CliVendor[]): CliTool[] {
+  return vendors.filter(isCliTool);
+}

@@ -1,0 +1,424 @@
+import {
+  splitArgs,
+  type VendorConfig,
+} from "../../../platform/agent-config.js";
+import { agyPrintTimeoutArgs, detectAgyCaps } from "../agy-caps.js";
+import { resolveCodexAutoApproveArgs } from "../codex-flags.js";
+import { resolveReadOnlyArgs } from "../read-only.js";
+import type { Invocation } from "../types.js";
+
+export interface ExternalInvocationOptions {
+  /** Requires a built-in restriction or an explicit read_only_flag.
+   * Suppresses auto-approve and rejects missing or conflicting restrictions. */
+  readOnly?: boolean;
+  /** Absolute workspace path the agent must be able to write. Used by vendors
+   * whose CLI confines writes to a trusted root unless granted explicitly
+   * (antigravity/agy → `--add-dir`; codex derives its extra sandbox roots
+   * from it). */
+  workspace?: string;
+}
+
+/**
+ * The full argument set every external-invocation builder receives. Bundled
+ * into one object so builders destructure only what they need (instead of a
+ * positional signature where most params are underscore-ignored).
+ */
+export interface ExternalInvocationArgs {
+  vendor: string;
+  vendorConfig: VendorConfig;
+  promptFlag: string | null;
+  promptContent: string;
+  agentId?: string;
+  options: ExternalInvocationOptions;
+}
+
+/**
+ * A vendor-specific external-invocation builder. All builders share one
+ * signature so they can be routed through EXTERNAL_DISPATCH; each reads only
+ * the fields it needs from the shared argument object.
+ */
+type ExternalInvocationBuilder = (args: ExternalInvocationArgs) => Invocation;
+
+/**
+ * Cursor headless prompt with a plain trailing prompt — used by the external-invocation builder
+ * (no @{agentId} preamble).
+ */
+const buildExternalCursorInvocation: ExternalInvocationBuilder = ({
+  vendorConfig,
+  promptContent,
+  options,
+}) => {
+  const { readOnly = false } = options;
+  const command = vendorConfig.command || "cursor";
+  const args: string[] = ["agent", "-p"];
+
+  if (vendorConfig.output_format_flag && vendorConfig.output_format) {
+    args.push(vendorConfig.output_format_flag, vendorConfig.output_format);
+  } else if (vendorConfig.output_format_flag) {
+    args.push(vendorConfig.output_format_flag);
+  }
+
+  if (readOnly) {
+    args.push(...resolveReadOnlyArgs("cursor", vendorConfig));
+  } else if (vendorConfig.auto_approve_flag) {
+    args.push(vendorConfig.auto_approve_flag);
+  } else {
+    args.push("--yolo");
+  }
+  args.push("--trust");
+
+  if (vendorConfig.model_flag && vendorConfig.default_model) {
+    args.push(vendorConfig.model_flag, vendorConfig.default_model);
+  }
+
+  args.push(promptContent);
+
+  return { command, args, env: { ...process.env } };
+};
+
+/** Kiro: `kiro-cli chat --no-interactive --trust-all-tools [--agent …] [--model …] "<prompt>"`. */
+const buildExternalKiroInvocation: ExternalInvocationBuilder = ({
+  vendor,
+  vendorConfig,
+  promptContent,
+  agentId,
+  options,
+}) => {
+  const { readOnly = false } = options;
+  const command = vendorConfig.command || "kiro-cli";
+  const args: string[] = ["chat", "--no-interactive"];
+
+  if (!readOnly) {
+    if (vendorConfig.auto_approve_flag) {
+      args.push(vendorConfig.auto_approve_flag);
+    } else {
+      args.push("--trust-all-tools");
+    }
+  } else {
+    args.push(...resolveReadOnlyArgs(vendor, vendorConfig));
+  }
+
+  if (agentId) {
+    args.push("--agent", agentId);
+  }
+
+  if (vendorConfig.model_flag && vendorConfig.default_model) {
+    args.push(vendorConfig.model_flag, vendorConfig.default_model);
+  }
+
+  args.push(promptContent);
+
+  return { command, args, env: { ...process.env } };
+};
+
+/** Grok: supports `grok --yolo -p "prompt"` for headless execution. */
+const buildExternalGrokInvocation: ExternalInvocationBuilder = ({
+  vendor,
+  vendorConfig,
+  promptContent,
+  options,
+}) => {
+  const { readOnly = false } = options;
+  const command = vendorConfig.command || "grok";
+  const args: string[] = [];
+
+  if (!readOnly) {
+    if (vendorConfig.auto_approve_flag) {
+      args.push(vendorConfig.auto_approve_flag);
+    } else {
+      args.push("--yolo");
+    }
+  } else {
+    args.push(...resolveReadOnlyArgs(vendor, vendorConfig));
+  }
+
+  if (vendorConfig.model_flag && vendorConfig.default_model) {
+    args.push(vendorConfig.model_flag, vendorConfig.default_model);
+  }
+
+  // Grok uses -p for the prompt (positional after flags in practice).
+  args.push("-p", promptContent);
+
+  return { command, args, env: { ...process.env } };
+};
+
+/**
+ * Kimi Code CLI: `kimi -p "<prompt>"` runs a single prompt non-interactively
+ * and streams stdout. In `-p` mode Kimi uses the `auto` permission policy by
+ * default — tool calls are auto-approved — and `--yolo`/`--auto` are MUTUALLY
+ * EXCLUSIVE with `--prompt`, so we must NOT append them. Kimi exposes no
+ * headless read-only sandbox flag, so read-only requires an explicit wrapper
+ * restriction in read_only_flag.
+ */
+const buildExternalKimiInvocation: ExternalInvocationBuilder = ({
+  vendor,
+  vendorConfig,
+  promptContent,
+  options,
+}) => {
+  const { readOnly = false } = options;
+  const command = vendorConfig.command || "kimi";
+  const args: string[] = [];
+
+  if (vendorConfig.model_flag && vendorConfig.default_model) {
+    args.push(vendorConfig.model_flag, vendorConfig.default_model);
+  }
+
+  if (readOnly) {
+    args.push(...resolveReadOnlyArgs(vendor, vendorConfig));
+  }
+
+  // `-p`/`--prompt` is Kimi's non-interactive prompt flag.
+  args.push("-p", promptContent);
+
+  return { command, args, env: { ...process.env } };
+};
+
+/**
+ * pi (Earendil): `pi -p [--exclude-tools …] [--model …] "<prompt>"`. pi has no
+ * permission sandbox or auto-approve flag — tools run without prompting — so
+ * read-only excludes the standard edit, write, bash, and powershell tools. This is a tool
+ * restriction, not an operating-system sandbox. The model/thinking
+ * flags are appended after the positional prompt by applyResolvedPlan when a
+ * per-agent plan is active; pi tolerates options after positionals.
+ */
+const buildExternalPiInvocation: ExternalInvocationBuilder = ({
+  vendorConfig,
+  promptContent,
+  options,
+}) => {
+  const { readOnly = false } = options;
+  const command = vendorConfig.command || "pi";
+  const args: string[] = ["-p"];
+
+  if (readOnly) {
+    args.push(...resolveReadOnlyArgs("pi", vendorConfig));
+  }
+
+  // Fallback model path (no resolved plan): emit the vendor default model.
+  if (vendorConfig.model_flag && vendorConfig.default_model) {
+    args.push(vendorConfig.model_flag, vendorConfig.default_model);
+  }
+
+  args.push(promptContent);
+
+  return { command, args, env: { ...process.env } };
+};
+
+/**
+ * opencode: `opencode run -m <model> [--agent <agentId>] --dir <cwd>
+ *            [--dangerously-skip-permissions] "<prompt>"`.
+ * CRITICAL: `-p` in opencode means `--password`, NOT prompt. The prompt MUST
+ * be the trailing positional arg (matches the [message..] positional in
+ * `opencode run --help`). Never precede it with a prompt flag.
+ */
+const buildExternalOpencodeInvocation: ExternalInvocationBuilder = ({
+  vendor,
+  vendorConfig,
+  promptContent,
+  agentId,
+  options,
+}) => {
+  const { readOnly = false, workspace = process.cwd() } = options;
+  const command = vendorConfig.command || "opencode";
+  const args: string[] = ["run"];
+
+  const modelFlag = vendorConfig.model_flag || "-m";
+  const modelValue = vendorConfig.default_model;
+  if (modelValue) {
+    args.push(modelFlag, modelValue);
+  }
+
+  if (agentId) {
+    args.push("--agent", agentId);
+  }
+
+  args.push("--dir", workspace);
+
+  if (!readOnly) {
+    args.push("--dangerously-skip-permissions");
+  } else {
+    args.push(...resolveReadOnlyArgs(vendor, vendorConfig));
+  }
+
+  // Prompt is the last positional arg — never preceded by a -p flag.
+  args.push(promptContent);
+
+  return { command, args, env: { ...process.env } };
+};
+
+/**
+ * Vendors whose external CLI argv differs from the generic shape get a
+ * dedicated builder here. Vendors absent from this table fall through to the
+ * generic builder in buildExternalInvocation (mirrors NATIVE_DISPATCH).
+ */
+const EXTERNAL_DISPATCH: Record<string, ExternalInvocationBuilder> = {
+  cursor: buildExternalCursorInvocation,
+  kiro: buildExternalKiroInvocation,
+  grok: buildExternalGrokInvocation,
+  kimi: buildExternalKimiInvocation,
+  pi: buildExternalPiInvocation,
+  opencode: buildExternalOpencodeInvocation,
+};
+
+/**
+ * Generic external builder for vendors absent from EXTERNAL_DISPATCH (mirrors
+ * NATIVE_DISPATCH's fallthrough). Assembles the common argv/env shape from the
+ * vendor config.
+ */
+const buildGenericExternalInvocation: ExternalInvocationBuilder = ({
+  vendor,
+  vendorConfig,
+  promptFlag,
+  promptContent,
+  options,
+}) => {
+  const { readOnly = false, workspace } = options;
+
+  // Vendors whose CLI binary name differs from the vendor identifier.
+  const binaryByVendor: Record<string, string> = {
+    antigravity: "agy",
+    kiro: "kiro-cli",
+  };
+  const command = vendorConfig.command || binaryByVendor[vendor] || vendor;
+  const args: string[] = [];
+  const optionArgs: string[] = [];
+
+  if (vendorConfig.subcommand) {
+    args.push(vendorConfig.subcommand);
+  }
+
+  if (vendorConfig.output_format_flag && vendorConfig.output_format) {
+    optionArgs.push(
+      vendorConfig.output_format_flag,
+      vendorConfig.output_format,
+    );
+  } else if (vendorConfig.output_format_flag) {
+    optionArgs.push(vendorConfig.output_format_flag);
+  }
+
+  // agy 1.0 had no `--model` flag — skip a vendorConfig model flag for the
+  // antigravity vendor unless the installed agy advertises support (1.1+).
+  // model_flag/default_model are checked FIRST so the caps probe only runs
+  // when a model flag would actually be emitted.
+  if (
+    vendorConfig.model_flag &&
+    vendorConfig.default_model &&
+    (vendor !== "antigravity" || detectAgyCaps().modelFlag)
+  ) {
+    optionArgs.push(vendorConfig.model_flag, vendorConfig.default_model);
+  }
+
+  // agy confines file writes to its own trusted root (~/.gemini/antigravity-cli)
+  // unless the workspace is granted explicitly, so a subagent can exit 0 with
+  // its artifacts outside the repo. Grant the workspace when agy supports it.
+  if (vendor === "antigravity" && workspace && detectAgyCaps().addDir) {
+    optionArgs.push("--add-dir", workspace);
+  }
+
+  // Lift agy's 5m print-mode ceiling (see agyPrintTimeoutArgs).
+  if (vendor === "antigravity") {
+    optionArgs.push(...agyPrintTimeoutArgs());
+  }
+
+  if (vendorConfig.isolation_flags) {
+    optionArgs.push(...splitArgs(vendorConfig.isolation_flags));
+  }
+
+  if (readOnly) {
+    optionArgs.push(...resolveReadOnlyArgs(vendor, vendorConfig));
+  } else {
+    if (vendor === "codex") {
+      optionArgs.push(
+        ...resolveCodexAutoApproveArgs(vendorConfig.auto_approve_flag, {
+          workspace,
+        }),
+      );
+    } else if (vendorConfig.auto_approve_flag) {
+      optionArgs.push(vendorConfig.auto_approve_flag);
+    } else {
+      const defaultAutoApprove: Record<string, string> = {
+        qwen: "--yolo",
+        antigravity: "--dangerously-skip-permissions",
+        grok: "--yolo",
+        kiro: "--trust-all-tools",
+      };
+      const fallbackFlag = defaultAutoApprove[vendor];
+      if (fallbackFlag) {
+        optionArgs.push(fallbackFlag);
+      }
+    }
+  }
+
+  // Codex gates every non-managed command hook behind a per-invocation trust
+  // (TOFU) check, so oma-installed .codex/hooks.json reverts to untrusted
+  // whenever an install changes the command string. Pass
+  // `--dangerously-bypass-hook-trust` so oma-spawned codex runs its own vetted
+  // hooks without the manual re-trust step. Verified against codex 0.144.1:
+  // the flag runs an enabled hook whose trusted_hash is stale; the
+  // BYPASS_HOOK_TRUST env var is NOT honored. Applied only to oma-spawned
+  // processes, never written to user config.
+  if (vendor === "codex") {
+    optionArgs.push("--dangerously-bypass-hook-trust");
+  }
+
+  if (promptFlag) {
+    optionArgs.push(promptFlag, promptContent);
+  }
+
+  args.push(...optionArgs);
+  if (!promptFlag) {
+    args.push(promptContent);
+  }
+
+  const env = { ...process.env };
+  if (vendorConfig.isolation_env) {
+    const [key, ...rest] = vendorConfig.isolation_env.split("=");
+    const rawValue = rest.join("=");
+    if (key && rawValue && isSafeIsolationEnvKey(key)) {
+      env[key] = rawValue.replace("$$", String(process.pid));
+    } else if (key && rawValue) {
+      console.warn(
+        `[agent-spawn] isolation_env key '${key}' can hijack process loading; skipped.`,
+      );
+    }
+  }
+
+  return { command, args, env };
+};
+
+/**
+ * Builds the external (cross-vendor subprocess) invocation for a spawned agent.
+ * Routes to the vendor's dedicated builder, falling back to the generic builder
+ * for vendors absent from EXTERNAL_DISPATCH.
+ */
+export function buildExternalInvocation(
+  vendor: string,
+  vendorConfig: VendorConfig,
+  promptFlag: string | null,
+  promptContent: string,
+  agentId?: string,
+  options: ExternalInvocationOptions = {},
+): Invocation {
+  if (options.readOnly) resolveReadOnlyArgs(vendor, vendorConfig);
+  const builder = EXTERNAL_DISPATCH[vendor] ?? buildGenericExternalInvocation;
+  return builder({
+    vendor,
+    vendorConfig,
+    promptFlag,
+    promptContent,
+    agentId,
+    options,
+  });
+}
+
+// isolation_env comes from user-editable oma-config.yaml. Loader/interpreter
+// hijack variables must never be injected into trusted vendor CLI processes.
+const DANGEROUS_ENV_KEY_RE =
+  /^(PATH|LD_[A-Z_]+|DYLD_[A-Z_]+|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|NODE_PATH|BUN_INSTALL|PERL5LIB|RUBYLIB|IFS|ENV|BASH_ENV|SHELL)$/i;
+
+export function isSafeIsolationEnvKey(key: string): boolean {
+  return (
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !DANGEROUS_ENV_KEY_RE.test(key)
+  );
+}

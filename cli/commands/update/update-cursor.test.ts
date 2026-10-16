@@ -1,0 +1,782 @@
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const memoryState = vi.hoisted(() => ({
+  ensureAgentMemory: vi.fn(
+    async (_options?: { onProgress?: (message: string) => void }) => ({
+      state: "ready" as const,
+      endpoint: "http://127.0.0.1:25150",
+      installed: false,
+      started: false,
+      reused: true,
+    }),
+  ),
+}));
+vi.mock("../../io/agentmemory/ensure.js", () => memoryState);
+
+const testHome = vi.hoisted(() => ({ root: "" }));
+const syncSchedulesSpy = vi.hoisted(() =>
+  vi.fn(async () => ({ synced: 0, resynced: 0, pruned: 0 })),
+);
+vi.mock("node:os", async (original) => ({
+  ...(await original<typeof import("node:os")>()),
+  homedir: () => join(testHome.root, "test-home"),
+}));
+
+const hyperframesState = vi.hoisted(() => ({
+  describeToolchain: vi.fn(() => ({ version: null as string | null })),
+  ensureLatestToolchain: vi.fn(),
+  ensureHyperframesSkills: vi.fn(),
+}));
+
+// Vendor reconciliation must not inspect or update the developer's toolchain.
+vi.mock(
+  "../../io/video/internal/hyperframes-workspace.js",
+  () => hyperframesState,
+);
+
+const serenaState = vi.hoisted(() => ({
+  ensureSerenaProject: vi.fn(() => ({ configured: false, registered: false })),
+  ensureOmaSerenaContexts: vi.fn(() => ({ changed: [], failed: [] })),
+  inferSerenaLanguages: vi.fn(() => ["typescript"]),
+  deriveSerenaLanguages: vi.fn((_cwd: string, languages: string[]) => ({
+    languages,
+    prunable: true,
+  })),
+}));
+
+vi.mock("../../io/serena.js", async (original) => ({
+  ...(await original<typeof import("../../io/serena.js")>()),
+  ...serenaState,
+}));
+
+const gortexState = vi.hoisted(() => ({
+  ensureGortexProject: vi.fn(() => ({
+    binaryAvailable: true,
+    tracked: "already",
+    excludes: { status: "unchanged", added: [] },
+  })),
+}));
+
+vi.mock("../../io/gortex.js", () => gortexState);
+
+const providerState = vi.hoisted(() => ({
+  loadProviders: vi.fn(() => ({
+    docs: "context7",
+    web: "native",
+    code_intelligence: "serena" as "serena" | "gortex",
+    semantic_memory: "agentmemory",
+  })),
+}));
+
+vi.mock("../../utils/providers.js", async (original) => ({
+  ...(await original<typeof import("../../utils/providers.js")>()),
+  loadProviders: providerState.loadProviders,
+}));
+
+vi.mock("../../utils/config.js", async (original) => ({
+  ...(await original<typeof import("../../utils/config.js")>()),
+  loadSerenaConfig: vi.fn(() => ({ autoUpdate: false })),
+}));
+
+let extractedRepoDir = "";
+let cleanupMock: ReturnType<typeof vi.fn>;
+let configuredVendorsForTest: string[] = [];
+let mockInstallRoot = "";
+
+vi.mock("../../platform/install-context.js", () => ({
+  getInstallRoot: vi.fn(() => mockInstallRoot),
+  getInstallMode: vi.fn(() => "project"),
+  safeGetInstallRoot: vi.fn(() => mockInstallRoot),
+  safeGetInstallMode: vi.fn(() => "project"),
+  isProjectModeInHome: vi.fn(() => false),
+  _resetInstallContext: vi.fn(),
+}));
+
+vi.mock("../../platform/manifest.js", () => ({
+  fetchRemoteManifest: vi.fn(async () => ({
+    version: "9.9.9",
+    metadata: { totalFiles: 1 },
+  })),
+  getLocalVersion: vi.fn(async () => "9.9.8"),
+  getNeedsReconcile: vi.fn(() => false),
+  hasInstalledProject: vi.fn(() => true),
+  saveLocalVersion: vi.fn(async () => {}),
+  setNeedsReconcile: vi.fn(() => {}),
+  snapshotArtifacts: vi.fn(() => ({ skills: [], workflows: [] })),
+  diffArtifacts: vi.fn(() => ({
+    addedSkills: [],
+    removedSkills: [],
+    addedWorkflows: [],
+    removedWorkflows: [],
+  })),
+  hasArtifactChanges: vi.fn(() => false),
+  readSkillDescription: vi.fn(() => ""),
+  readWorkflowDescription: vi.fn(() => ""),
+}));
+
+vi.mock("../../io/tarball.js", () => ({
+  downloadAndExtract: vi.fn(async () => ({
+    dir: extractedRepoDir,
+    cleanup: cleanupMock,
+  })),
+}));
+
+vi.mock("../../io/schedule/sync.js", () => ({
+  syncSchedules: syncSchedulesSpy,
+}));
+vi.mock("../../io/git-recommended.js", () => ({
+  maybeApplyRecommendedGitConfig: vi.fn(async () => ({
+    available: true,
+    applied: [],
+    skipped: [],
+    alreadyOk: ["rerere.enabled", "init.defaultBranch"],
+  })),
+}));
+
+vi.mock("../commands/migrations/index.js", () => ({
+  runMigrations: vi.fn(() => []),
+}));
+
+vi.mock("../../platform/rules.js", () => ({
+  applyCursorRules: vi.fn(() => []),
+  mergeRulesIndexForVendor: vi.fn(() => true),
+  vendorDocFile: vi.fn((vendor: string) =>
+    ["claude", "codex", "cursor", "qwen", "pi"].includes(vendor)
+      ? "AGENTS.md"
+      : undefined,
+  ),
+}));
+
+vi.mock("../../platform/skills-installer.js", () => ({
+  ALL_CLI_VENDORS: [
+    "antigravity",
+    "claude",
+    "codex",
+    "copilot",
+    "cursor",
+    "grok",
+    "hermes",
+    "qwen",
+  ],
+  EXTENSION_VENDORS: ["pi"],
+  CLI_SKILLS_DIR: {
+    antigravity: {
+      projectPath: ".gemini/antigravity-cli/skills",
+      homePath: ".gemini/antigravity-cli/skills",
+      requiresHomeConsent: true,
+    },
+    claude: { projectPath: ".claude/skills", homePath: ".claude/skills" },
+    codex: { projectPath: ".codex/skills", homePath: ".codex/skills" },
+    copilot: { projectPath: ".github/skills", homePath: ".copilot/skills" },
+    cursor: { projectPath: ".cursor/skills", homePath: ".cursor/skills" },
+    grok: { projectPath: ".grok/skills", homePath: ".grok/skills" },
+    hermes: {
+      projectPath: ".hermes/skills/oma",
+      homePath: ".hermes/skills/oma",
+      requiresHomeConsent: true,
+    },
+    qwen: { projectPath: ".qwen/skills", homePath: ".qwen/skills" },
+  },
+  REPO: "first-fluke/oh-my-agent",
+  installCopilotWorkflowPrompts: vi.fn(),
+  installVendorAdaptations: vi.fn(),
+  detectExistingCliSymlinkDirs: vi.fn(() => []),
+  getInstalledSkillNames: vi.fn(() => []),
+  getInstalledWorkflowNames: vi.fn(() => []),
+  createVendorWorkflowSymlinks: vi.fn(() => ({ created: [], skipped: [] })),
+  createVendorSymlinks: vi.fn(() => ({
+    created: [],
+    skipped: [],
+    removed: [],
+  })),
+  createCliSymlinks: vi.fn(() => ({ created: [], skipped: [], removed: [] })),
+  applyCursorMcpConfig: vi.fn(),
+  readVendorsFromConfig: vi.fn(() => configuredVendorsForTest),
+  isHookVendor: vi.fn((v: string) =>
+    ["claude", "codex", "cursor", "qwen"].includes(v),
+  ),
+  isExtensionVendor: vi.fn((v: string) => v === "pi"),
+  vendorRequiresHomeConsent: vi.fn((cli: string) => cli === "hermes"),
+}));
+
+import * as manifest from "../../platform/manifest.js";
+import * as rules from "../../platform/rules.js";
+import * as skills from "../../platform/skills-installer.js";
+import { update } from "../update/run.js";
+
+describe("update cursor vendor adaptations", () => {
+  const tempRoots: string[] = [];
+  const originalCwd = process.cwd();
+
+  beforeEach(() => {
+    testHome.root = makeTempRoot("oma-update-home-");
+    cleanupMock = vi.fn();
+    configuredVendorsForTest = [];
+    vi.clearAllMocks();
+    memoryState.ensureAgentMemory.mockReset().mockResolvedValue({
+      state: "ready",
+      endpoint: "http://127.0.0.1:25150",
+      installed: false,
+      started: false,
+      reused: true,
+    });
+    (
+      skills.installVendorAdaptations as unknown as ReturnType<typeof vi.fn>
+    ).mockImplementation(() => undefined);
+    providerState.loadProviders.mockReturnValue({
+      docs: "context7",
+      web: "native",
+      code_intelligence: "serena",
+      semantic_memory: "agentmemory",
+    });
+    hyperframesState.describeToolchain.mockReturnValue({ version: null });
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    mockInstallRoot = "";
+    for (const root of tempRoots) {
+      // Windows holds locks on a just-released cwd briefly — retry to avoid EBUSY flake.
+      rmSync(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
+    }
+    tempRoots.length = 0;
+  });
+
+  function makeTempRoot(prefix: string): string {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    tempRoots.push(root);
+    return root;
+  }
+
+  function writeRepoConfig(repoRoot: string, vendors: string[]): void {
+    mkdirSync(join(repoRoot, ".agents"), { recursive: true });
+    writeFileSync(
+      join(repoRoot, ".agents", "oma-config.yaml"),
+      `vendors:\n${vendors.map((v) => `  - ${v}`).join("\n")}\n`,
+      "utf-8",
+    );
+    configuredVendorsForTest = vendors;
+  }
+
+  function createExistingVendorRoots(projectRoot: string, vendors: string[]) {
+    for (const vendor of vendors) {
+      mkdirSync(join(projectRoot, `.${vendor}`), { recursive: true });
+    }
+  }
+
+  it("re-syncs OS scheduler registrations after a successful update", async () => {
+    // Regression: a CLI upgrade that renamed `schedule:run` → `schedule run`
+    // left every launchd/crontab registration invoking the old spelling.
+    const projectDir = makeTempRoot("oma-update-sched-project-");
+    const repoDir = makeTempRoot("oma-update-sched-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["cursor"]);
+    createExistingVendorRoots(projectDir, ["cursor"]);
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    expect(syncSchedulesSpy).toHaveBeenCalledTimes(1);
+  });
+
+  describe("shared oma-config source", () => {
+    // The release ships both `oma-config.cue` and `oma-config.yaml`. The bulk
+    // copy must not hand a user a second shared config source next to the one
+    // they already have: CUE outranks YAML, so a stray template `.cue` would
+    // silently shadow every setting in the user's `oma-config.yaml`.
+    const TEMPLATE_CUE = 'package config\n\nlanguage: "en"\n';
+    const TEMPLATE_YAML = "language: en\n";
+
+    function setupRelease(): { projectDir: string; agentsDir: string } {
+      const projectDir = makeTempRoot("oma-update-config-project-");
+      const repoDir = makeTempRoot("oma-update-config-repo-");
+      extractedRepoDir = repoDir;
+      mockInstallRoot = projectDir;
+      writeRepoConfig(repoDir, ["cursor"]);
+      writeFileSync(join(repoDir, ".agents", "oma-config.yaml"), TEMPLATE_YAML);
+      writeFileSync(join(repoDir, ".agents", "oma-config.cue"), TEMPLATE_CUE);
+      createExistingVendorRoots(projectDir, ["cursor"]);
+      const agentsDir = join(projectDir, ".agents");
+      mkdirSync(agentsDir, { recursive: true });
+      return { projectDir, agentsDir };
+    }
+
+    it("does not add oma-config.cue for a YAML-only user", async () => {
+      const { projectDir, agentsDir } = setupRelease();
+      const userYaml = "language: ko\nmodel_preset: auto\n";
+      writeFileSync(join(agentsDir, "oma-config.yaml"), userYaml);
+
+      process.chdir(projectDir);
+      await update({ ci: true });
+
+      expect(existsSync(join(agentsDir, "oma-config.cue"))).toBe(false);
+      expect(
+        readFileSync(join(agentsDir, "oma-config.yaml"), "utf-8"),
+      ).toContain("language: ko");
+    });
+
+    it("does not add oma-config.yaml for a CUE-only user", async () => {
+      const { projectDir, agentsDir } = setupRelease();
+      const userCue = 'package config\n\nlanguage: "ko"\n';
+      writeFileSync(join(agentsDir, "oma-config.cue"), userCue);
+
+      process.chdir(projectDir);
+      await update({ ci: true });
+
+      expect(existsSync(join(agentsDir, "oma-config.yaml"))).toBe(false);
+      expect(readFileSync(join(agentsDir, "oma-config.cue"), "utf-8")).toBe(
+        userCue,
+      );
+    });
+
+    it("keeps a single source when --force resets a YAML-only user", async () => {
+      const { projectDir, agentsDir } = setupRelease();
+      writeFileSync(join(agentsDir, "oma-config.yaml"), "language: ko\n");
+
+      process.chdir(projectDir);
+      await update({ ci: true, force: true });
+
+      expect(existsSync(join(agentsDir, "oma-config.cue"))).toBe(false);
+      // Reset to the template (post-copy migrations may still annotate it).
+      const reset = readFileSync(join(agentsDir, "oma-config.yaml"), "utf-8");
+      expect(reset).toContain("language: en");
+      expect(reset).not.toContain("language: ko");
+    });
+
+    it("bootstraps one shared config when the user has neither", async () => {
+      const { projectDir, agentsDir } = setupRelease();
+
+      process.chdir(projectDir);
+      await update({ ci: true });
+
+      // Same rule as a fresh install: prefer the shipped CUE template.
+      expect(readFileSync(join(agentsDir, "oma-config.cue"), "utf-8")).toBe(
+        TEMPLATE_CUE,
+      );
+      expect(existsSync(join(agentsDir, "oma-config.yaml"))).toBe(false);
+    });
+
+    // Older updates did copy the shipped CUE into YAML projects. Clean up the
+    // copies that are still a shipped template; keep anything the user edited.
+    const SHIPPED_CUE = readFileSync(
+      new URL("./__fixtures__/oma-config.b5a5598a.cue", import.meta.url),
+      "utf-8",
+    );
+
+    it("removes a stray shipped oma-config.cue from a YAML project", async () => {
+      const { projectDir, agentsDir } = setupRelease();
+      writeFileSync(join(agentsDir, "oma-config.yaml"), "language: ko\n");
+      writeFileSync(join(agentsDir, "oma-config.cue"), SHIPPED_CUE);
+
+      process.chdir(projectDir);
+      await update({ ci: true });
+
+      expect(existsSync(join(agentsDir, "oma-config.cue"))).toBe(false);
+      expect(
+        readFileSync(join(agentsDir, "oma-config.yaml"), "utf-8"),
+      ).toContain("language: ko");
+      const backupDir = join(agentsDir, "backup", "stray-shared-config");
+      const stamps = readdirSync(backupDir);
+      expect(stamps).toHaveLength(1);
+      expect(
+        readFileSync(
+          join(backupDir, String(stamps[0]), "oma-config.cue"),
+          "utf-8",
+        ),
+      ).toBe(SHIPPED_CUE);
+    });
+
+    it("keeps an oma-config.cue the user edited next to YAML", async () => {
+      const { projectDir, agentsDir } = setupRelease();
+      const edited = SHIPPED_CUE.replace('"Asia/Seoul"', '"Europe/Berlin"');
+      writeFileSync(join(agentsDir, "oma-config.yaml"), "language: ko\n");
+      writeFileSync(join(agentsDir, "oma-config.cue"), edited);
+
+      process.chdir(projectDir);
+      await update({ ci: true });
+
+      expect(readFileSync(join(agentsDir, "oma-config.cue"), "utf-8")).toBe(
+        edited,
+      );
+    });
+  });
+
+  it("prepares project shared memory before vendor linking and version stamping", async () => {
+    const projectDir = makeTempRoot("oma-update-memory-project-");
+    extractedRepoDir = makeTempRoot("oma-update-memory-repo-");
+    mockInstallRoot = projectDir;
+    writeRepoConfig(extractedRepoDir, ["cursor"]);
+    createExistingVendorRoots(projectDir, ["cursor"]);
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    expect(memoryState.ensureAgentMemory).toHaveBeenCalledExactlyOnceWith({
+      onProgress: expect.any(Function),
+    });
+    const prepareOrder =
+      memoryState.ensureAgentMemory.mock.invocationCallOrder[0];
+    expect(prepareOrder).toBeLessThan(
+      vi.mocked(skills.installVendorAdaptations).mock.invocationCallOrder[0] ??
+        0,
+    );
+    expect(prepareOrder).toBeLessThan(
+      vi.mocked(manifest.saveLocalVersion).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it.each(["none", "honcho"] as const)(
+    "does not prepare AgentMemory for project provider %s at the current version",
+    async (semantic_memory) => {
+      const projectDir = makeTempRoot("oma-update-memory-optout-project-");
+      extractedRepoDir = makeTempRoot("oma-update-memory-optout-repo-");
+      mockInstallRoot = projectDir;
+      writeRepoConfig(extractedRepoDir, ["cursor"]);
+      createExistingVendorRoots(projectDir, ["cursor"]);
+      providerState.loadProviders.mockReturnValue({
+        docs: "context7",
+        web: "native",
+        code_intelligence: "serena",
+        semantic_memory,
+      });
+      vi.mocked(manifest.getLocalVersion).mockResolvedValueOnce("9.9.9");
+
+      process.chdir(projectDir);
+      await update({ ci: true });
+
+      expect(memoryState.ensureAgentMemory).not.toHaveBeenCalled();
+    },
+  );
+
+  it("installs cursor hooks and merges cursor guide on update", async () => {
+    const projectDir = makeTempRoot("oma-update-cursor-project-");
+    const repoDir = makeTempRoot("oma-update-cursor-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["cursor"]);
+    createExistingVendorRoots(projectDir, ["cursor"]);
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    const firstInstallCall = (
+      skills.installVendorAdaptations as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    // link kernel always passes (cwd, cwd) — sourceDir == targetDir == project.
+    expect(firstInstallCall?.[0]).toContain(projectDir);
+    expect(firstInstallCall?.[1]).toContain(projectDir);
+    expect(firstInstallCall?.[2]).toEqual(["cursor"]);
+    const cursorRulesCall = (
+      rules.applyCursorRules as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    expect(cursorRulesCall?.[0]).toContain(projectDir);
+
+    const mcpLinkCall = (
+      skills.applyCursorMcpConfig as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    expect(mcpLinkCall?.[0]).toContain(projectDir);
+
+    const firstMergeCall = (
+      rules.mergeRulesIndexForVendor as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.find((call: unknown[]) => call[1] === "cursor");
+    expect(firstMergeCall?.[0]).toContain(projectDir);
+    expect(firstMergeCall?.[1]).toBe("cursor");
+  });
+
+  it("deduplicates AGENTS merge when codex and cursor are both enabled", async () => {
+    const projectDir = makeTempRoot("oma-update-cursor-codex-project-");
+    const repoDir = makeTempRoot("oma-update-cursor-codex-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["codex", "cursor"]);
+    createExistingVendorRoots(projectDir, ["codex", "cursor"]);
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    const secondInstallCall = (
+      skills.installVendorAdaptations as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    // link kernel always passes (cwd, cwd) — sourceDir == targetDir == project.
+    expect(secondInstallCall?.[0]).toContain(projectDir);
+    expect(secondInstallCall?.[1]).toContain(projectDir);
+    expect(secondInstallCall?.[2]).toEqual(["codex", "cursor"]);
+    const secondCursorRulesCall = (
+      rules.applyCursorRules as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0];
+    expect(secondCursorRulesCall?.[0]).toContain(projectDir);
+
+    expect(
+      (skills.applyCursorMcpConfig as unknown as ReturnType<typeof vi.fn>).mock
+        .calls.length,
+    ).toBeGreaterThan(0);
+
+    const codexMergeCall = (
+      rules.mergeRulesIndexForVendor as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.find((call: unknown[]) => call[1] === "codex");
+    expect(codexMergeCall?.[0]).toContain(projectDir);
+    expect(codexMergeCall?.[1]).toBe("codex");
+
+    const cursorMergeCall = (
+      rules.mergeRulesIndexForVendor as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.find((call: unknown[]) => call[1] === "cursor");
+    expect(cursorMergeCall).toBeUndefined();
+  });
+
+  it("does not save version when vendor adaptations fail", async () => {
+    const projectDir = makeTempRoot("oma-update-fail-project-");
+    const repoDir = makeTempRoot("oma-update-fail-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["codex"]);
+    createExistingVendorRoots(projectDir, ["codex"]);
+
+    (
+      skills.installVendorAdaptations as unknown as ReturnType<typeof vi.fn>
+    ).mockImplementation(() => {
+      throw new Error(
+        "ENOENT: no such file or directory, open '/tmp/project/.codex/hooks.json'",
+      );
+    });
+
+    process.chdir(projectDir);
+
+    await expect(update({ ci: true })).rejects.toThrow("ENOENT");
+    expect(manifest.saveLocalVersion).not.toHaveBeenCalled();
+  });
+
+  it("skips Serena maintenance when Gortex is selected", async () => {
+    const projectDir = makeTempRoot("oma-update-gortex-project-");
+    const repoDir = makeTempRoot("oma-update-gortex-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["codex"]);
+    createExistingVendorRoots(projectDir, ["codex"]);
+    providerState.loadProviders.mockReturnValue({
+      docs: "context7",
+      web: "native",
+      code_intelligence: "gortex",
+      semantic_memory: "agentmemory",
+    });
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    expect(serenaState.ensureSerenaProject).not.toHaveBeenCalled();
+    expect(serenaState.ensureOmaSerenaContexts).not.toHaveBeenCalled();
+    // Gortex gets the same per-update project maintenance Serena gets:
+    // excludes reconciled and the root (re-)registered with the daemon.
+    expect(gortexState.ensureGortexProject).toHaveBeenCalledWith(
+      expect.stringContaining("oma-update-gortex-project-"),
+    );
+  });
+
+  it("does not run Gortex project setup when Serena is selected", async () => {
+    const projectDir = makeTempRoot("oma-update-serena-project-");
+    const repoDir = makeTempRoot("oma-update-serena-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["codex"]);
+    createExistingVendorRoots(projectDir, ["codex"]);
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    expect(serenaState.ensureSerenaProject).toHaveBeenCalled();
+    expect(gortexState.ensureGortexProject).not.toHaveBeenCalled();
+  });
+
+  it("reconciles Gortex MCP drift when the installed version is current", async () => {
+    const projectDir = makeTempRoot("oma-update-gortex-drift-project-");
+    const repoDir = makeTempRoot("oma-update-gortex-drift-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["codex"]);
+    createExistingVendorRoots(projectDir, ["codex"]);
+    providerState.loadProviders.mockReturnValue({
+      docs: "context7",
+      web: "native",
+      code_intelligence: "gortex",
+      semantic_memory: "agentmemory",
+    });
+    vi.mocked(manifest.getLocalVersion).mockResolvedValueOnce("9.9.9");
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    expect(manifest.saveLocalVersion).toHaveBeenCalledWith(
+      expect.stringContaining("oma-update-gortex-drift-project-"),
+      "9.9.9",
+      "project",
+    );
+    expect(
+      readFileSync(join(projectDir, ".codex", "config.toml"), "utf8"),
+    ).toContain("[mcp_servers.gortex]");
+  });
+
+  it("reconciles browser drift in both scopes when the installed version is current", async () => {
+    const projectDir = makeTempRoot("oma-update-browser-drift-");
+    testHome.root = projectDir;
+    const repoDir = makeTempRoot("oma-update-browser-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["cursor"]);
+    createExistingVendorRoots(projectDir, ["cursor"]);
+    mkdirSync(join(projectDir, ".agents"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".agents/oma-config.yaml"),
+      "mcp:\n  devtools_browsers: [aside]\n",
+    );
+    for (const [directory, browser] of [
+      [".cursor", "chrome"],
+      ["test-home/.cursor", "firefox"],
+    ] as const) {
+      mkdirSync(join(projectDir, directory), { recursive: true });
+      writeFileSync(
+        join(projectDir, directory, "mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            [`${browser}-devtools`]: { command: browser },
+            custom: { command: "keep" },
+          },
+        }),
+      );
+    }
+    vi.mocked(manifest.getLocalVersion).mockResolvedValueOnce("9.9.9");
+    process.chdir(projectDir);
+    await update({ ci: true });
+    const local = JSON.parse(
+      readFileSync(join(projectDir, ".cursor/mcp.json"), "utf8"),
+    ).mcpServers;
+    expect(local.aside).toBeDefined();
+    expect(local["chrome-devtools"]).toBeUndefined();
+    expect(
+      JSON.parse(
+        readFileSync(join(projectDir, "test-home/.cursor/mcp.json"), "utf8"),
+      ).mcpServers,
+    ).toEqual({ custom: { command: "keep" } });
+  });
+
+  it("throttles Hyperframes refresh for projects with oma-video", async () => {
+    const projectDir = makeTempRoot("oma-update-hyperframes-project-");
+    const repoDir = makeTempRoot("oma-update-hyperframes-repo-");
+    extractedRepoDir = repoDir;
+    mockInstallRoot = projectDir;
+    writeRepoConfig(repoDir, ["codex"]);
+    createExistingVendorRoots(projectDir, ["codex"]);
+    (
+      skills.getInstalledSkillNames as unknown as ReturnType<typeof vi.fn>
+    ).mockReturnValue(["oma-video"]);
+    hyperframesState.describeToolchain.mockReturnValue({ version: "4.0.522" });
+    hyperframesState.ensureLatestToolchain.mockResolvedValue({
+      version: "4.0.522",
+      status: "current",
+    });
+    hyperframesState.ensureHyperframesSkills.mockResolvedValue({
+      ref: "11986e44eeb6",
+      status: "current",
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    expect(hyperframesState.ensureLatestToolchain).toHaveBeenCalledWith({
+      checkIntervalMin: 60,
+      force: false,
+    });
+    expect(hyperframesState.ensureHyperframesSkills).toHaveBeenCalledWith({
+      checkIntervalMin: 60,
+      force: false,
+    });
+    expect(logSpy.mock.calls.flat().join("\n")).not.toContain(
+      "hyperframes 4.0.522",
+    );
+  });
+
+  it.each([
+    { status: "fresh", expected: "skills updated to abc123" },
+    { status: "stale", expected: "skills: network unavailable" },
+    { status: undefined, expected: "skills: check failed" },
+  ])(
+    "reports only changed or failed Hyperframes components ($status)",
+    async ({ status, expected }) => {
+      const projectDir = makeTempRoot("oma-update-output-project-");
+      extractedRepoDir = makeTempRoot("oma-update-output-repo-");
+      mockInstallRoot = projectDir;
+      writeRepoConfig(extractedRepoDir, ["codex"]);
+      createExistingVendorRoots(projectDir, ["codex"]);
+      vi.mocked(skills.getInstalledSkillNames).mockReturnValue(["oma-video"]);
+      hyperframesState.describeToolchain.mockReturnValue({ version: "0.8.74" });
+      hyperframesState.ensureLatestToolchain.mockResolvedValue({
+        version: "0.8.74",
+        status: "current",
+      });
+      hyperframesState.ensureHyperframesSkills.mockResolvedValue(
+        status
+          ? {
+              ref: "abc123",
+              status,
+              note: status === "stale" ? "network unavailable" : undefined,
+            }
+          : undefined,
+      );
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      process.chdir(projectDir);
+      await update({ ci: true });
+
+      const output = logSpy.mock.calls.flat().join("\n");
+      expect(output).toContain(expected);
+      expect(output).not.toContain("hyperframes 0.8.74");
+      logSpy.mockRestore();
+    },
+  );
+
+  it("reports completion once and a repaired symlink once", async () => {
+    const projectDir = makeTempRoot("oma-update-summary-project-");
+    extractedRepoDir = makeTempRoot("oma-update-summary-repo-");
+    mockInstallRoot = projectDir;
+    writeRepoConfig(extractedRepoDir, ["codex"]);
+    createExistingVendorRoots(projectDir, ["codex"]);
+    const repaired = "~/.kimi-code/skills/oma-frontend";
+    const removed = "~/.kimi-code/skills/legacy";
+    vi.mocked(skills.createVendorSymlinks).mockReturnValueOnce({
+      created: [repaired],
+      removed: [repaired, removed],
+      skipped: [],
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    process.chdir(projectDir);
+    await update({ ci: true });
+
+    const output = stripVTControlCharacters(
+      logSpy.mock.calls.flat().join("\n"),
+    );
+    expect(output.split(repaired)).toHaveLength(2);
+    expect(output).toContain(removed);
+    expect(output.match(/Updated to version 9\.9\.9/g)).toHaveLength(1);
+    expect(output).not.toContain("files updated successfully");
+    expect(output).not.toContain("Skipped global HOME-level");
+    logSpy.mockRestore();
+  });
+});

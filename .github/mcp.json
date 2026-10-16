@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "serena": {
+      "type": "local",
+      "command": "oma",
+      "args": [
+        "bridge",
+        "--context",
+        "oma"
+      ],
+      "env": {
+        "SERENA_LOG_LEVEL": "info"
+      },
+      "tools": [
+        "*"
+      ]
+    },
+    "aside": {
+      "type": "local",
+      "command": "aside",
+      "args": [
+        "mcp"
+      ],
+      "tools": [
+        "*"
+      ]
+    }
+  }
+}
